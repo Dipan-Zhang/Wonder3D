@@ -1,8 +1,3 @@
-import argparse
-import datetime
-import logging
-import inspect
-import math
 import os
 from typing import Dict, Optional, Tuple, List
 from omegaconf import OmegaConf
@@ -20,11 +15,14 @@ import torch.utils.checkpoint
 import torchvision.transforms.functional as TF
 from torchvision.utils import make_grid, save_image
 
-import transformers
 import accelerate
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration, set_seed
+
+import transformers
+from transformers import CLIPTextModel, CLIPTokenizer
+from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 
 import diffusers
 from diffusers import AutoencoderKL, DDPMScheduler, DDIMScheduler, StableDiffusionPipeline, UNet2DConditionModel
@@ -34,6 +32,7 @@ from diffusers.utils import check_min_version, deprecate, is_wandb_available
 from diffusers.utils.import_utils import is_xformers_available
 
 from tqdm.auto import tqdm
+
 from transformers import CLIPTextModel, CLIPTokenizer
 from transformers import CLIPImageProcessor, CLIPVisionModelWithProjection
 

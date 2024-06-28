@@ -416,9 +416,10 @@ class MVDiffusionImagePipeline(DiffusionPipeline):
         if isinstance(image, list):
             image_pil = image
         elif isinstance(image, torch.Tensor):
-            image_pil = [TF.to_pil_image(image[i]) for i in range(image.shape[0])]
+            image_pil = [TF.to_pil_image(image[i]) for i in range(image.shape[0])] # transform back to tensor
         image_embeddings, image_latents = self._encode_image(image_pil, device, num_images_per_prompt, do_classifier_free_guidance)
 
+        # if also input a normal pic?
         if normal_cond is not None:
             if isinstance(normal_cond, list):
                 normal_cond_pil = normal_cond
@@ -437,11 +438,12 @@ class MVDiffusionImagePipeline(DiffusionPipeline):
             camera_embedding = repeat(camera_embedding, "Nv Nce -> (B Nv) Nce", B=batch_size//len(camera_embedding))
         camera_embeddings = self.prepare_camera_embedding(camera_embedding, do_classifier_free_guidance=do_classifier_free_guidance, num_images_per_prompt=num_images_per_prompt)
 
-        # 4. Prepare timesteps
+        # 4. Prepare timesteps for diffusion processes
         self.scheduler.set_timesteps(num_inference_steps, device=device)
         timesteps = self.scheduler.timesteps
 
         # 5. Prepare latent variables
+        # ?? what's the functionality here
         num_channels_latents = self.unet.config.out_channels
         latents = self.prepare_latents(
             batch_size * num_images_per_prompt,

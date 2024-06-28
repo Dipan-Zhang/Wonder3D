@@ -19,10 +19,20 @@ import pdb
 import math
 
 
+"""
+parse input from cli
+construct runner class
+runner.train()
+"""
+
 def ranking_loss(error, penalize_ratio=0.7, type='mean'):
-    error, indices = torch.sort(error)
+    """
+    get rid of some very big error values -> stable convergence
+    penalize_ratio close to 1: focusing on the majority of errors
+    """
+    error, indices = torch.sort(error) # sort increasing
     # only sum relatively small errors
-    s_error = torch.index_select(error, 0, index=indices[: int(penalize_ratio * indices.shape[0])])
+    s_error = torch.index_select(error, 0, index=indices[: int(penalize_ratio * indices.shape[0])]) # select only ratio part of the errors, smaller errors
     if type == 'mean':
         return torch.mean(s_error)
     elif type == 'sum':

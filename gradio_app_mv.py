@@ -73,13 +73,15 @@ if not hasattr(Image, 'Resampling'):
 
 
 def sam_init():
-    sam_checkpoint = os.path.join(os.path.dirname(__file__), "sam_pt", "sam_vit_h_4b8939.pth")
-    model_type = "vit_h"
+    # sam_checkpoint = os.path.join(os.path.dirname(__file__), "sam_pt", "sam_vit_h_4b8939.pth")
+    # model_type = "vit_h"
 
+    # use local sam_l fornow
+    sam_checkpoint = '/home/stud/zanr/code/segment-anything/' + "sam_vit_l_0b3195.pth"
+    model_type = "vit_l"
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint).to(device=f"cuda:{_GPU_ID}")
     predictor = SamPredictor(sam)
     return predictor
-
 
 def sam_segment(predictor, input_image, *bbox_coords):
     bbox = np.array(bbox_coords)
