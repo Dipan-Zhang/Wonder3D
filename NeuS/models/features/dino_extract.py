@@ -33,7 +33,7 @@ _supported_dino_models = {"dino_vits8", "dino_vits16", "dino_vitb8", "dino_vitb1
 
 @torch.no_grad()
 def extract_dino_features(image_paths: List[str], device: torch.device) -> torch.Tensor:
-    from f3rm.features.dino.dino_vit_extractor import ViTExtractor
+    from NeuS.models.features.dino.dino_vit_extractor import ViTExtractor
 
     assert (
         DINOArgs.model_type in _supported_dino_models

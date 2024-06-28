@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from f3rm.features.clip.interpolate import interpolate_positional_embedding
+from NeuS.models.features.clip.interpolate import interpolate_positional_embedding
 
 
 class Bottleneck(nn.Module):

@@ -10,8 +10,8 @@ from PIL import Image
 from torchvision.transforms import Compose, Resize, CenterCrop, ToTensor, Normalize
 from tqdm import tqdm
 
-from f3rm.features.clip.model import build_model
-from f3rm.features.clip.simple_tokenizer import SimpleTokenizer as _Tokenizer
+from NeuS.models.features.clip.model import build_model
+from NeuS.models.features.clip.simple_tokenizer import SimpleTokenizer as _Tokenizer
 
 try:
     from torchvision.transforms import InterpolationMode

@@ -145,13 +145,14 @@ class Runner:
                 # data = self.dataset.gen_random_rays_at(img_idx, self.batch_size)
                 data = data.cuda()
 
-                rays_o, rays_d, true_rgb, mask, true_normal, cosines = (
+                rays_o, rays_d, true_rgb, mask, true_normal, cosines, features = (
                     data[:, :3],
                     data[:, 3:6],
                     data[:, 6:9],
                     data[:, 9:10],
                     data[:, 10:13],
-                    data[:, 13:],
+                    data[:, 13:14],
+                    data[:, 14:]
                 )
                 # near, far = self.dataset.near_far_from_sphere(rays_o, rays_d)
                 near, far = self.dataset.get_near_far()
