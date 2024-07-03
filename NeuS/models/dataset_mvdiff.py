@@ -13,6 +13,7 @@ import pdb
 
 from models.features.clip_extract import CLIPArgs, extract_clip_features
 from models.features.dino_extract import DINOArgs, extract_dino_features
+from models.features.pca_colormap import apply_pca_colormap
 
 
 def camNormal2worldNormal(rot_c2w, camNormal):
@@ -90,6 +91,7 @@ def load_a_prediction(root_dir, test_object, imSize, view_types, load_color=Fals
     print(f'camera pose directory {cam_pose_dir}')
     RT_front = np.loadtxt(glob(os.path.join(cam_pose_dir, '*_%s_RT.txt'%( 'front')))[0])   # world2cam matrix
     RT_front_cv = RT_opengl2opencv(RT_front)   # convert normal from opengl to opencv
+
     for idx, view in enumerate(view_types):
         # print(os.path.join(root_dir,test_object))
         normal_filepath = os.path.join(root_dir,test_object, 'normals_000_%s.png'%( view))
@@ -97,11 +99,12 @@ def load_a_prediction(root_dir, test_object, imSize, view_types, load_color=Fals
         if load_color:  # use bgr
             image =np.array(PIL.Image.open(normal_filepath.replace("normals", "rgb")).resize(imSize))[:, :, ::-1]
 
+
         normal = np.array(PIL.Image.open(normal_filepath).resize(imSize))
-        mask = normal[:, :, 3]
+        mask = normal[:, :, 3] # why mask is relevant with normal???
         normal = normal[:, :, :3]
 
-        RT = np.loadtxt(os.path.join(cam_pose_dir, '000_%s_RT.txt'%( view)))  # world2cam matrix
+        RT = np.loadtxt(os.path.join(cam_pose_dir, '000_%s_RT.txt'%(view)))  # world2cam matrix
 
         normal = img2normal(normal)
 
@@ -141,7 +144,7 @@ def expand_features(features,img_size):
 
     return expanded_features
 
-def extract_features(root_dir, test_object,feat_type,imSize, view_types, load_color=False, cam_pose_dir=None, normal_system='front'):
+def extract_features(root_dir, test_object,feat_type, view_types, normal_system='front'):
 
     """Extract features with support for caching.
     return features
@@ -160,7 +163,7 @@ def extract_features(root_dir, test_object,feat_type,imSize, view_types, load_co
     # extract_args = feat_type_to_args[self.config.feature_type]
     image_fnames = []
     for idx, view in enumerate(view_types):
-        rgb_filepath = os.path.join(root_dir, test_object, 'rgb_000_%s.png'%(view))
+        rgb_filepath = os.path.join(root_dir, test_object, 'masked_rgb','rgb_000_%s.png'%(view))
         image_fnames.append(rgb_filepath)
    
     # print(image_fnames)
@@ -231,10 +234,9 @@ class Dataset:
                   self.cam_pose_dir, normal_system=self.normal_system)
         
         # load features
-        features = extract_features(self.data_dir,self.object_name,'DINO',256, view_types, self.load_color,
-                  self.cam_pose_dir, normal_system=self.normal_system) # ([6, 55, 55, 384])
-        self.features = expand_features(features, self.imSize)
-        # print(type(self.features))
+        features = extract_features(self.data_dir,self.object_name,'DINO', view_types, normal_system=self.normal_system) # # [n_images, 55, 55, 384]
+        self.features = expand_features(features, self.imSize) # [n_images, H, W, 384]
+        self.features_rgb_np = apply_pca_colormap(self.features).cpu().numpy() * 255
 
         self.n_images = self.images_np.shape[0]
 
@@ -320,19 +322,20 @@ class Dataset:
         """
         Generate random rays at world space from one camera from single image
         """
+        # create a 2d pixel grid 
         tx = torch.linspace(0, self.W - 1, self.W)
         ty = torch.linspace(0, self.H - 1, self.H)
         pixels_x, pixels_y = torch.meshgrid(tx, ty)
-
         pixels_x = pixels_x.reshape(-1).long()
         pixels_y = pixels_y.reshape(-1).long()
-        color = self.images[img_idx][(pixels_y, pixels_x)]    # batch_size, 3
+
+        color = self.images[img_idx][(pixels_y, pixels_x)]    # batch_size, 3 -> 4 
         mask = self.masks[img_idx][(pixels_y, pixels_x)]      # batch_size, 3
         features = self.features[img_idx][((pixels_y, pixels_x))].to('cpu') # batch_size 1
         normal = self.normals_world[img_idx][(pixels_y, pixels_x)]      # batch_size, 3
         
         q = torch.stack([(pixels_x / self.W-0.5)*2, (pixels_y / self.H-0.5)*2, torch.zeros_like(pixels_y)], dim=-1).float()  # batch_size, 3
-        v = torch.stack([torch.zeros_like(pixels_y), torch.zeros_like(pixels_y), torch.ones_like(pixels_y)], dim=-1).float()
+        v = torch.stack([torch.zeros_like(pixels_y), torch.zeros_like(pixels_y), torch.ones_like(pixels_y)], dim=-1).float() # 001 z-axis
         
         rays_v = v / torch.linalg.norm(v, ord=2, dim=-1, keepdim=True)    # batch_size, 3
         rays_v = torch.matmul(self.pose_all[img_idx, None, :3, :3], rays_v[:, :, None]).squeeze()  # batch_size, 3
@@ -340,10 +343,9 @@ class Dataset:
         rays_o = torch.matmul(self.pose_all[img_idx, None, :3, :3], q[:, :, None]).squeeze()  # batch_size, 3
         rays_o = self.pose_all[img_idx, None, :3, 3].expand(rays_v.shape) + rays_o # batch_size, 3
 
+        # the similarity between 
         cosines = self.cos(rays_v, normal)
 
-        # pdb.set_trace()
-        
         return torch.cat([rays_o.cpu(), rays_v.cpu(), color, mask[:, None], normal, cosines[:, None],features], dim=-1)   # batch_size, 10
 
 
@@ -418,6 +420,12 @@ class Dataset:
         mask = np.uint8(self.masks_np[idx]*255)[:, :, None]
         mask = np.concatenate([mask]*3, axis=-1)
         return (cv2.resize(mask, (self.W // resolution_level, self.H // resolution_level))).clip(0, 255)
+    
+    def feature_at(self,idx,resolution_level):
+        feature = self.features_rgb_np[idx]
+        # breakpoint()
+        return (cv2.resize(feature, (self.W // resolution_level, self.H // resolution_level))).clip(0, 255)
+
 
 
 # if __name__=='__main__':

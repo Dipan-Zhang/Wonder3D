@@ -15,6 +15,7 @@ from pyhocon import ConfigFactory
 from models.dataset_mvdiff import Dataset
 from models.fields import RenderingNetwork, SDFNetwork, SingleVarianceNetwork, NeRF, FeatureNetwork 
 from models.renderer import NeuSRenderer, MeanRenderer
+from models.features.pca_colormap import apply_pca_colormap
 import pdb
 import math
 
@@ -41,6 +42,10 @@ def ranking_loss(error, penalize_ratio=0.7, type='mean'):
 
 class Runner:
     def __init__(self, conf_path, mode='train', case='CASE_NAME', is_continue=False, data_dir=None):
+        """"
+        mode: train, save_maps, validate_mesh, interpolate(create novel view)
+        is_contine: whether continue unfinished training
+        """
         self.device = torch.device('cuda')
 
         # Configuration
@@ -66,7 +71,7 @@ class Runner:
 
         # Training parameters
         self.end_iter = self.conf.get_int('train.end_iter')
-        self.save_freq = self.conf.get_int('train.save_freq')
+        self.save_freq = self.conf.get_int('train.save_freq') # 5k by default
         self.report_freq = self.conf.get_int('train.report_freq')
         self.val_freq = self.conf.get_int('train.val_freq')
         self.val_mesh_freq = self.conf.get_int('train.val_mesh_freq')
@@ -103,6 +108,7 @@ class Runner:
         params_to_train_slow += list(self.deviation_network.parameters())
         # params_to_train += list(self.color_network.parameters())
 
+        # optimzier: separate different parameter groups
         self.optimizer = torch.optim.Adam(
             [{'params': params_to_train_slow}, {'params': self.color_network.parameters(), 'lr': self.learning_rate * 2},{'params':self.feature_network.parameters()}], lr=self.learning_rate
         )
@@ -113,7 +119,7 @@ class Runner:
 
         # Load checkpoint
         latest_model_name = None
-        if is_continue:
+        if is_continue: # cont
             model_list_raw = os.listdir(os.path.join(self.base_exp_dir, 'checkpoints'))
             model_list = []
             for model_name in model_list_raw:
@@ -139,8 +145,8 @@ class Runner:
         num_train_epochs = math.ceil(res_step / len(self.dataloader))
 
         print("training ", num_train_epochs, " epoches")
-
-        for epoch in range(num_train_epochs):
+        # breakpoint()
+        for epoch in range(5):
             # for iter_i in tqdm(range(res_step)):
             print("epoch ", epoch)
             for iter_i, data in enumerate(self.dataloader):
@@ -152,6 +158,10 @@ class Runner:
                     data[:, :3],
                     data[:, 3:6],
                     data[:, 6:9],
+                    # data[:, 10:11], #one empty space bc mask coming from rgb now
+                    # data[:, 11:14],
+                    # data[:, 14:15],
+                    # data[:, 15:],
                     data[:, 9:10],
                     data[:, 10:13],
                     data[:, 13:14],
@@ -322,6 +332,7 @@ class Runner:
         self.sdf_network.load_state_dict(checkpoint['sdf_network_fine'])
         self.deviation_network.load_state_dict(checkpoint['variance_network_fine'])
         self.color_network.load_state_dict(checkpoint['color_network_fine'])
+        self.feature_network.load_state_dict(checkpoint['feature_network'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
         self.iter_step = checkpoint['iter_step']
 
@@ -333,6 +344,7 @@ class Runner:
             'sdf_network_fine': self.sdf_network.state_dict(),
             'variance_network_fine': self.deviation_network.state_dict(),
             'color_network_fine': self.color_network.state_dict(),
+            'feature_network': self.feature_network.state_dict(),
             'optimizer': self.optimizer.state_dict(),
             'iter_step': self.iter_step,
         }
@@ -349,13 +361,14 @@ class Runner:
         if resolution_level < 0:
             resolution_level = self.validate_resolution_level
         rays_o, rays_d = self.dataset.gen_rays_at(idx, resolution_level=resolution_level)
-        H, W, _ = rays_o.shape
-        rays_o = rays_o.reshape(-1, 3).split(self.batch_size)
+        H, W, _ = rays_o.shape # 256 x 256
+        rays_o = rays_o.reshape(-1, 3).split(self.batch_size) #TODO should here be train_batchsize or add one vali batch_size?  = 512
         rays_d = rays_d.reshape(-1, 3).split(self.batch_size)
 
         out_rgb_fine = []
         out_normal_fine = []
         out_mask = []
+        out_feature = []
 
         for rays_o_batch, rays_d_batch in zip(rays_o, rays_d):
             # near, far = self.dataset.near_far_from_sphere(rays_o_batch, rays_d_batch)
@@ -382,10 +395,14 @@ class Runner:
             if feasible('weight_sum'):
                 out_mask.append(render_out['weight_sum'].detach().clip(0, 1).cpu().numpy())
 
+            if feasible('feature'):
+                out_feature.append(render_out['feature'].detach()) # 512 x 384
             del render_out
 
+        # out_rgb_fine 128 x 512 x 3
         img_fine = None
         if len(out_rgb_fine) > 0:
+            # concatenate  (65536, 3) -> reshape  (256, 256, 3, 1)
             img_fine = (np.concatenate(out_rgb_fine, axis=0).reshape([H, W, 3, -1]) * 256).clip(0, 255)
 
         mask_map = None
@@ -396,10 +413,34 @@ class Runner:
         if len(out_normal_fine) > 0:
             normal_img = np.concatenate(out_normal_fine, axis=0)
             rot = np.linalg.inv(self.dataset.pose_all[idx, :3, :3].detach().cpu().numpy())
-            normal_img = (np.matmul(rot[None, :, :], normal_img[:, :, None]).reshape([H, W, 3, -1]) * 128 + 128).clip(0, 255)
+            normal_img = (np.matmul(rot[None, :, :], normal_img[:, :, None]).reshape([H, W, 3, -1]) * 128 + 128).clip(0, 255) # (256, 256, 3, 1)
+
+        # breakpoint()
+        feature_img = None
+        if len(out_feature) > 0:
+            temp_img = (torch.cat(out_feature, axis=0).reshape([H, W, 384, -1])) # (256, 256, 384, 1) hw x c x 1
+            # breakpoint()
+            temp_img_re = temp_img.permute(3,2,0,1) # N x c x h x w
+            downsampled_img = F.interpolate(temp_img_re, size=(64,64),mode = 'nearest')
+            
+            downsampled_img_re = downsampled_img.permute(0,2,3,1) # N x c x h x w -> n x h x w x c
+            feature_img = apply_pca_colormap(downsampled_img_re) # n x h x w x c(3)
+
+            feature_img = feature_img.permute(0,3,1,2) # n h w c ->N c h w
+            feature_img = F.interpolate(feature_img, size=(H,W),mode = 'nearest')
+            feature_img = feature_img.permute(2,3,1,0).cpu().numpy() # N c h w -> h w c N
+            feature_img = (feature_img*256).clip(0,255)
+
+
+            #     #TODO save feature embeddings also here
+
+            #     temp_img  = apply_pca_colormap(out_feature[i]).cpu().numpy() # 512 x 3
+            #     feature_img = np.concatenate(temp_img, axis=0)
+            # feature_img = np.concatenate(out_normal_fine, axis=0)
 
         os.makedirs(os.path.join(self.base_exp_dir, 'validations_fine'), exist_ok=True)
         os.makedirs(os.path.join(self.base_exp_dir, 'normals'), exist_ok=True)
+        os.makedirs(os.path.join(self.base_exp_dir, 'feature'), exist_ok=True)
 
         for i in range(img_fine.shape[-1]):
             if len(out_rgb_fine) > 0:
@@ -420,6 +461,12 @@ class Runner:
                 )
             if len(out_mask) > 0:
                 cv.imwrite(os.path.join(self.base_exp_dir, 'normals', '{:0>8d}_{}_{}_mask.png'.format(self.iter_step, i, idx)), mask_map[..., i])
+            # breakpoint()
+            if len(out_feature) > 0:
+                cv.imwrite(
+                    os.path.join(self.base_exp_dir, 'feature', '{:0>8d}_{}_{}.png'.format(self.iter_step, i, idx)),
+                    np.concatenate([feature_img[..., i],self.dataset.feature_at(idx,resolution_level=resolution_level)])[:, :, ::-1],
+                )
 
     def save_maps(self, idx, img_idx, resolution_level=1):
         view_types = ['front', 'back', 'left', 'right']
@@ -572,7 +619,7 @@ if __name__ == '__main__':
         runner.train()
         runner.validate_mesh(world_space=False, resolution=256, threshold=args.mcube_threshold)
     elif args.mode == 'save_maps':
-        for i in range(4):
+        for i in range(4): 
             runner.save_maps(idx=i, img_idx=runner.dataset.object_viewidx)
     elif args.mode == 'validate_mesh':
         runner.validate_mesh(world_space=False, resolution=512, threshold=args.mcube_threshold)
