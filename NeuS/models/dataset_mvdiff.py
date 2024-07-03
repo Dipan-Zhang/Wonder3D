@@ -11,8 +11,8 @@ import PIL.Image
 from glob import glob
 import pdb
 
-from NeuS.models.features.clip_extract import CLIPArgs, extract_clip_features
-from NeuS.models.features.dino_extract import DINOArgs, extract_dino_features
+from models.features.clip_extract import CLIPArgs, extract_clip_features
+from models.features.dino_extract import DINOArgs, extract_dino_features
 
 
 def camNormal2worldNormal(rot_c2w, camNormal):
@@ -87,11 +87,11 @@ def load_a_prediction(root_dir, test_object, imSize, view_types, load_color=Fals
     all_masks = []
     all_poses = []
     all_w2cs = []
-    print(cam_pose_dir)
+    print(f'camera pose directory {cam_pose_dir}')
     RT_front = np.loadtxt(glob(os.path.join(cam_pose_dir, '*_%s_RT.txt'%( 'front')))[0])   # world2cam matrix
     RT_front_cv = RT_opengl2opencv(RT_front)   # convert normal from opengl to opencv
     for idx, view in enumerate(view_types):
-        print(os.path.join(root_dir,test_object))
+        # print(os.path.join(root_dir,test_object))
         normal_filepath = os.path.join(root_dir,test_object, 'normals_000_%s.png'%( view))
         # Load key frame
         if load_color:  # use bgr
@@ -139,7 +139,7 @@ def expand_features(features,img_size):
     # Step 3: Permute back to [batch_size, height, width, channels]
     expanded_features = expanded_features.permute(0, 2, 3, 1) 
 
-    return expand_features
+    return expanded_features
 
 def extract_features(root_dir, test_object,feat_type,imSize, view_types, load_color=False, cam_pose_dir=None, normal_system='front'):
 
@@ -151,10 +151,10 @@ def extract_features(root_dir, test_object,feat_type,imSize, view_types, load_co
     "DINO": extract_dino_features,
     }
 
-    feat_type_to_args = {
-        "CLIP": CLIPArgs,
-        "DINO": DINOArgs,
-    }
+    # feat_type_to_args = {
+    #     "CLIP": CLIPArgs,
+    #     "DINO": DINOArgs,
+    # }
 
     extract_fn = feat_type_to_extract_fn[feat_type]
     # extract_args = feat_type_to_args[self.config.feature_type]
@@ -163,13 +163,12 @@ def extract_features(root_dir, test_object,feat_type,imSize, view_types, load_co
         rgb_filepath = os.path.join(root_dir, test_object, 'rgb_000_%s.png'%(view))
         image_fnames.append(rgb_filepath)
    
-    print(image_fnames)
+    # print(image_fnames)
     # If cache exists, load it and validate it. We save it to the dataset directory.
     cache_dir = os.path.join(root_dir,'cache')
-
     cache_path = cache_dir + f"/{test_object}_features.pt"
 
-    # check whether cache exists
+    # check whether cache exists # TODO, change the structure here when enable cache = False
     enable_cache= True
     if enable_cache and os.path.exists(cache_path):
         print('load from dataset')
@@ -180,22 +179,20 @@ def extract_features(root_dir, test_object,feat_type,imSize, view_types, load_co
         #     print("Feature extraction args have changed, cache invalidated...")
         else:
             return cache_dict["features"]
+    else:
+        # Cache is invalid or doesn't exist, so extract features
+        print(f"Extracting {feat_type} features for {len(image_fnames)} images...")
+        features = extract_fn(image_fnames, device='cuda')
+        
+        if enable_cache: # save to cache
+            # cache_dict = {"args": extract_args.id_dict(), "image_fnames": image_fnames, "features": features}
+            cache_dict = {"image_fnames": image_fnames, "features": features}
+            # cache_dir.mkdir(exist_ok=True)
+            os.mkdir(cache_dir)
+            torch.save(cache_dict, cache_path)
+            print(f"Saved {feat_type} features to cache at {cache_path}")
 
-    # Cache is invalid or doesn't exist, so extract features
-    print(f"Extracting {feat_type_to_args} features for {len(image_fnames)} images...")
-    features = extract_fn(image_fnames, device='cuda')
-
-    # save to cache
-    
-    if enable_cache:
-        # cache_dict = {"args": extract_args.id_dict(), "image_fnames": image_fnames, "features": features}
-        cache_dict = {"image_fnames": image_fnames, "features": features}
-        # cache_dir.mkdir(exist_ok=True)
-        os.mkdir(cache_dir)
-        torch.save(cache_dict, cache_path)
-        print(f"Saved {feat_type_to_args} features to cache at {cache_path}")
-
-    return features
+        return features
 
 
     
@@ -234,9 +231,10 @@ class Dataset:
                   self.cam_pose_dir, normal_system=self.normal_system)
         
         # load features
-        self.features = extract_features(self.data_dir,self.object_name,'DINO',256, view_types, self.load_color,
-                  self.cam_pose_dir, normal_system=self.normal_system)
-        self.features = expand_features(self.features, self.imSize)
+        features = extract_features(self.data_dir,self.object_name,'DINO',256, view_types, self.load_color,
+                  self.cam_pose_dir, normal_system=self.normal_system) # ([6, 55, 55, 384])
+        self.features = expand_features(features, self.imSize)
+        # print(type(self.features))
 
         self.n_images = self.images_np.shape[0]
 
@@ -330,7 +328,7 @@ class Dataset:
         pixels_y = pixels_y.reshape(-1).long()
         color = self.images[img_idx][(pixels_y, pixels_x)]    # batch_size, 3
         mask = self.masks[img_idx][(pixels_y, pixels_x)]      # batch_size, 3
-        features = self.features[img_idx][((pixels_y, pixels_x))] # batch_size 1
+        features = self.features[img_idx][((pixels_y, pixels_x))].to('cpu') # batch_size 1
         normal = self.normals_world[img_idx][(pixels_y, pixels_x)]      # batch_size, 3
         
         q = torch.stack([(pixels_x / self.W-0.5)*2, (pixels_y / self.H-0.5)*2, torch.zeros_like(pixels_y)], dim=-1).float()  # batch_size, 3
@@ -344,11 +342,9 @@ class Dataset:
 
         cosines = self.cos(rays_v, normal)
 
-        #TODO here build connection between rays and features
-
         # pdb.set_trace()
         
-        return torch.cat([rays_o.cpu(), rays_v.cpu(), color, mask[:, None], normal, cosines[:, None]], features, dim=-1)   # batch_size, 10
+        return torch.cat([rays_o.cpu(), rays_v.cpu(), color, mask[:, None], normal, cosines[:, None],features], dim=-1)   # batch_size, 10
 
 
     def prepare_all_rays(self,):
@@ -424,7 +420,7 @@ class Dataset:
         return (cv2.resize(mask, (self.W // resolution_level, self.H // resolution_level))).clip(0, 255)
 
 
-if __name__=='__main__':
-    features = extract_features('/home/stud/zanr/code/tmp/Wonder3D/outputs/cropsize-192-cfg1.0/', 'owl','DINO',256, ['front', 'front_right', 'right', 'back', 'left', 'front_left'], load_color=False, cam_pose_dir=None, normal_system='front')
+# if __name__=='__main__':
+#     features = extract_features('/home/stud/zanr/code/tmp/Wonder3D/outputs/cropsize-192-cfg1.0/', 'owl','DINO',256, ['front', 'front_right', 'right', 'back', 'left', 'front_left'], load_color=False, cam_pose_dir=None, normal_system='front')
     # print(features.shape) # ([6, 55, 55, 384]) n_images, h, w, img_emb_dim
     
