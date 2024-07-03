@@ -6,6 +6,8 @@ import logging
 import mcubes
 from icecream import ic
 import pdb
+from torch import Tensor
+from jaxtyping import Float
 
 def extract_fields(bound_min, bound_max, resolution, query_func):
     N = 64
@@ -79,6 +81,8 @@ class NeuSRenderer:
                  sdf_network,
                  deviation_network,
                  color_network,
+                 feature_network,
+                 feature_render,
                  n_samples,
                  n_importance,
                  n_outside,
@@ -89,6 +93,8 @@ class NeuSRenderer:
         self.sdf_network = sdf_network
         self.deviation_network = deviation_network
         self.color_network = color_network
+        self.feature_network = feature_network
+        self.feature_render = feature_render
         self.n_samples = n_samples
         self.n_importance = n_importance
         self.n_outside = n_outside
@@ -207,6 +213,8 @@ class NeuSRenderer:
                     sdf_network,
                     deviation_network,
                     color_network,
+                    feature_network,
+                    feature_render,
                     background_alpha=None,
                     background_sampled_color=None,
                     background_rgb=None,
@@ -225,7 +233,7 @@ class NeuSRenderer:
         pts = pts.reshape(-1, 3)
         dirs = dirs.reshape(-1, 3)
 
-        sdf_nn_output = sdf_network(pts)
+        sdf_nn_output = sdf_network(pts) # sdf forward results
         sdf = sdf_nn_output[:, :1]
         feature_vector = sdf_nn_output[:, 1:]
 
@@ -269,6 +277,12 @@ class NeuSRenderer:
         weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1]).to(device), 1. - alpha + 1e-7], -1), -1)[:, :-1]
         weights_sum = weights.sum(dim=-1, keepdim=True)
 
+        # TODO check feature output
+        feature = feature_network(pts) # 65536 x 384
+        feature = feature.reshape(weights.shape[0],-1,384)
+        feature_rendered = feature_render(embeds=feature, weights=weights[:, :, None])
+
+        # print(f'shape of sampled_color{sampled_color.shape}') # 512, 128,3 
         color = (sampled_color * weights[:, :, None]).sum(dim=1)
         if background_rgb is not None:    # Fixed background, usually black
             color = color + background_rgb.to(device) * (1.0 - weights_sum)
@@ -286,6 +300,7 @@ class NeuSRenderer:
             'dists': dists,
             'gradients': gradients.reshape(batch_size, n_samples, 3),
             's_val': 1.0 / inv_s,
+            'feature': feature_rendered,
             'mid_z_vals': mid_z_vals,
             'weights': weights,
             'cdf': c.reshape(batch_size, n_samples),
@@ -329,10 +344,10 @@ class NeuSRenderer:
         background_sampled_color = None
 
         # Up sample
-        if self.n_importance > 0:
+        if self.n_importance > 0: #?? mean? meaning of torch.no_torch -> only used in inference??
             with torch.no_grad():
-                pts = rays_o[:, None, :] + rays_d[:, None, :] * z_vals[..., :, None]
-                sdf = self.sdf_network.sdf(pts.reshape(-1, 3)).reshape(batch_size, self.n_samples)
+                pts = rays_o[:, None, :] + rays_d[:, None, :] * z_vals[..., :, None] # map ray to real coordinate based on z values (distances)
+                sdf = self.sdf_network.sdf(pts.reshape(-1, 3)).reshape(batch_size, self.n_samples) # get sdf values, not forward!
 
                 for i in range(self.up_sample_steps):
                     new_z_vals = self.up_sample(rays_o,
@@ -354,7 +369,7 @@ class NeuSRenderer:
         if self.n_outside > 0:
             z_vals_feed = torch.cat([z_vals, z_vals_outside], dim=-1)
             z_vals_feed, _ = torch.sort(z_vals_feed, dim=-1)
-            ret_outside = self.render_core_outside(rays_o, rays_d, z_vals_feed, sample_dist, self.nerf)
+            ret_outside = self.render_core_outside(rays_o, rays_d, z_vals_feed, sample_dist, self.nerf) # only used for background model?
 
             background_sampled_color = ret_outside['sampled_color']
             background_alpha = ret_outside['alpha']
@@ -367,6 +382,8 @@ class NeuSRenderer:
                                     self.sdf_network,
                                     self.deviation_network,
                                     self.color_network,
+                                    self.feature_network,
+                                    self.feature_render,
                                     background_rgb=background_rgb,
                                     background_alpha=background_alpha,
                                     background_sampled_color=background_sampled_color,
@@ -374,12 +391,14 @@ class NeuSRenderer:
 
         color_fine = ret_fine['color']
         weights = ret_fine['weights']
+        # pdb.set_trace()
         weights_sum = weights.sum(dim=-1, keepdim=True)
         gradients = ret_fine['gradients']
         s_val = ret_fine['s_val'].reshape(batch_size, n_samples).mean(dim=-1, keepdim=True)
+        feature = ret_fine['feature'] 
     
 
-        # - randomly sample points from the volume, and maximize the sdf
+        # - randomly sample points from the volume, and maximize the sdf #??? 
         pts_random = torch.rand([1024, 3]).float().cuda() * 2 - 1  # normalized to (-1, 1)
         sdf_random =  self.sdf_network(pts_random)[:, :1]
 
@@ -392,7 +411,8 @@ class NeuSRenderer:
             'color_fine': color_fine,
             'depth': ret_fine['depth'],
             's_val': s_val,
-            'sparse_loss': sparse_loss,
+            'feature': feature,
+            'sparse_loss': sparse_loss, #? why need this
             'cdf_fine': ret_fine['cdf'],
             'weight_sum': weights_sum,
             'weight_max': torch.max(weights, dim=-1, keepdim=True)[0],
@@ -433,3 +453,17 @@ class NeuSRenderer:
                                 threshold=threshold,
                                 query_func=lambda pts: -self.sdf_network.sdf(pts),
                                 color_func=lambda pts: self.get_vertex_colors(pts))
+
+
+class MeanRenderer(nn.Module):
+    """Calculate average of embeddings along ray."""
+
+    @classmethod
+    def forward(
+        cls,
+        embeds: Float[Tensor, "bs num_samples num_classes"],
+        weights: Float[Tensor, "bs num_samples 1"],
+    ) -> Float[Tensor, "bs num_classes"]:
+        """Calculate semantics along the ray."""
+        output = torch.sum(weights * embeds, dim=-2)
+        return output

@@ -13,8 +13,8 @@ from icecream import ic
 from tqdm import tqdm
 from pyhocon import ConfigFactory
 from models.dataset_mvdiff import Dataset
-from models.fields import RenderingNetwork, SDFNetwork, SingleVarianceNetwork, NeRF
-from models.renderer import NeuSRenderer
+from models.fields import RenderingNetwork, SDFNetwork, SingleVarianceNetwork, NeRF, FeatureNetwork 
+from models.renderer import NeuSRenderer, MeanRenderer
 import pdb
 import math
 
@@ -84,6 +84,7 @@ class Runner:
         self.mask_weight = self.conf.get_float('train.mask_weight')
         self.normal_weight = self.conf.get_float('train.normal_weight')
         self.sparse_weight = self.conf.get_float('train.sparse_weight')
+        self.feature_weight = self.conf.get_float('train.feature_weight')
         self.is_continue = is_continue
         self.mode = mode
         self.model_list = []
@@ -95,17 +96,19 @@ class Runner:
         self.sdf_network = SDFNetwork(**self.conf['model.sdf_network']).to(self.device)
         self.deviation_network = SingleVarianceNetwork(**self.conf['model.variance_network']).to(self.device)
         self.color_network = RenderingNetwork(**self.conf['model.rendering_network']).to(self.device)
+        self.feature_network = FeatureNetwork(**self.conf['model.feature_network']).to(self.device)
+        self.feature_render = MeanRenderer()
         # params_to_train += list(self.nerf_outside.parameters())
-        params_to_train_slow += list(self.sdf_network.parameters())
+        params_to_train_slow += list(self.sdf_network.parameters()) #????
         params_to_train_slow += list(self.deviation_network.parameters())
         # params_to_train += list(self.color_network.parameters())
 
         self.optimizer = torch.optim.Adam(
-            [{'params': params_to_train_slow}, {'params': self.color_network.parameters(), 'lr': self.learning_rate * 2}], lr=self.learning_rate
+            [{'params': params_to_train_slow}, {'params': self.color_network.parameters(), 'lr': self.learning_rate * 2},{'params':self.feature_network.parameters()}], lr=self.learning_rate
         )
 
         self.renderer = NeuSRenderer(
-            self.nerf_outside, self.sdf_network, self.deviation_network, self.color_network, **self.conf['model.neus_renderer']
+            self.nerf_outside, self.sdf_network, self.deviation_network, self.color_network, self.feature_network, self.feature_render,**self.conf['model.neus_renderer']
         )
 
         # Load checkpoint
@@ -145,15 +148,17 @@ class Runner:
                 # data = self.dataset.gen_random_rays_at(img_idx, self.batch_size)
                 data = data.cuda()
 
-                rays_o, rays_d, true_rgb, mask, true_normal, cosines, features = (
+                rays_o, rays_d, true_rgb, mask, true_normal, cosines, feature_gt = (
                     data[:, :3],
                     data[:, 3:6],
                     data[:, 6:9],
                     data[:, 9:10],
                     data[:, 10:13],
                     data[:, 13:14],
-                    data[:, 14:]
+                    data[:, 14:],
                 )
+                # print(f'true rgb color shape is {true_rgb.shape}') # 512 x 3
+                # print(f'feature ground truth shape {feature_gt.shape}') # 512 x 384
                 # near, far = self.dataset.near_far_from_sphere(rays_o, rays_d)
                 near, far = self.dataset.get_near_far()
 
@@ -180,6 +185,7 @@ class Runner:
                 gradient_error = render_out['gradient_error']
                 weight_max = render_out['weight_max']
                 weight_sum = render_out['weight_sum']
+                feature = render_out['feature']
 
                 # Loss
                 # color_error = (color_fine - true_rgb) * mask
@@ -191,6 +197,10 @@ class Runner:
                 psnr = 20.0 * torch.log10(1.0 / (((color_fine - true_rgb) ** 2 * mask).sum() / (mask_sum * 3.0)).sqrt())
 
                 eikonal_loss = gradient_error
+
+                # TODO get feature loss 
+                feature_errors = F.mse_loss(feature,feature_gt,reduction="none") # feature gt 512 x 384, feature 65535 x 384
+                feature_loss = feature_errors.sum(dim=-1).nanmean()
 
                 # pdb.set_trace()
                 mask_errors = F.binary_cross_entropy(weight_sum.clip(1e-3, 1.0 - 1e-3), mask, reduction='none')
@@ -221,6 +231,7 @@ class Runner:
                     + sparse_loss * self.sparse_weight
                     + mask_loss * self.mask_weight
                     + normal_loss * self.normal_weight
+                    + feature_loss * self.feature_weight
                 )
 
                 self.optimizer.zero_grad()
@@ -230,6 +241,7 @@ class Runner:
                 self.writer.add_scalar('Loss/loss', loss, self.iter_step)
                 self.writer.add_scalar('Loss/color_loss', color_fine_loss, self.iter_step)
                 self.writer.add_scalar('Loss/eikonal_loss', eikonal_loss, self.iter_step)
+                self.writer.add_scalar('Loss/feature_loss', feature_loss, self.iter_step)
                 self.writer.add_scalar('Statistics/s_val', s_val.mean(), self.iter_step)
                 self.writer.add_scalar('Statistics/cdf', (cdf_fine[:, :1] * mask).sum() / mask_sum, self.iter_step)
                 self.writer.add_scalar('Statistics/weight_max', (weight_max * mask).sum() / mask_sum, self.iter_step)
@@ -238,7 +250,7 @@ class Runner:
                 if self.iter_step % self.report_freq == 0:
                     print(self.base_exp_dir)
                     print(
-                        'iter:{:8>d} loss = {:4>f} color_ls = {:4>f} eik_ls = {:4>f} normal_ls = {:4>f} mask_ls = {:4>f} sparse_ls = {:4>f} lr={:5>f}'.format(
+                        'iter:{:8>d} loss = {:4>f} color_ls = {:4>f} eik_ls = {:4>f} normal_ls = {:4>f} mask_ls = {:4>f} sparse_ls = {:4>f} feature_ls = {:4>f} lr={:5>f}'.format(
                             self.iter_step,
                             loss,
                             color_fine_loss,
@@ -246,6 +258,7 @@ class Runner:
                             normal_loss,
                             mask_loss,
                             sparse_loss,
+                            feature_loss,
                             self.optimizer.param_groups[0]['lr'],
                         )
                     )
