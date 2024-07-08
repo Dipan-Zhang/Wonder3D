@@ -146,6 +146,7 @@ runs
 
 # data
 /data
+/exp_recoording
 serialization_dir
 
 # emacs

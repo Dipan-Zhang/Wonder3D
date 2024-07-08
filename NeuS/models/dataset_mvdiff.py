@@ -94,9 +94,9 @@ def load_a_prediction(root_dir, test_object, imSize, view_types, load_color=Fals
 
     for idx, view in enumerate(view_types):
         # print(os.path.join(root_dir,test_object))
-        normal_filepath = os.path.join(root_dir,test_object, 'normals_000_%s.png'%( view))
+        normal_filepath = os.path.join(root_dir,test_object, 'masked_normals','normals_000_%s.png'%(view))
         # Load key frame
-        if load_color:  # use bgr
+        if load_color:  # whether use bg?
             image =np.array(PIL.Image.open(normal_filepath.replace("normals", "rgb")).resize(imSize))[:, :, ::-1]
 
 
@@ -240,8 +240,8 @@ class Dataset:
 
         self.n_images = self.images_np.shape[0]
 
-        self.images = torch.from_numpy(self.images_np.astype(np.float32)).cpu() / 255.  # [n_images, H, W, 3]
-        self.masks  = torch.from_numpy(self.masks_np.astype(np.float32)).cpu()   # [n_images, H, W, 3]
+        self.images = torch.from_numpy(self.images_np.astype(np.float32)).cpu() / 255.  # [n_images, H, W, 4]
+        self.masks  = torch.from_numpy(self.masks_np.astype(np.float32)).cpu()   # [n_images, H, W, 1]
         self.normals_cam  = torch.from_numpy(self.normals_cam_np.astype(np.float32)).cpu()   # [n_images, H, W, 3]
         self.normals_world  = torch.from_numpy(self.normals_world_np.astype(np.float32)).cpu()   # [n_images, H, W, 3]
         self.pose_all  = torch.from_numpy(self.pose_all_np.astype(np.float32)).cpu()   # [n_images,3, 4] cam2world
@@ -408,7 +408,8 @@ class Dataset:
         return self.near, self.far
 
     def image_at(self, idx, resolution_level):
-        img = self.images_np[idx]
+        img = self.images_np[idx][:,:,:3]
+        # breakpoint()
         return (cv2.resize(img, (self.W // resolution_level, self.H // resolution_level))).clip(0, 255)
 
     def normal_cam_at(self, idx, resolution_level):

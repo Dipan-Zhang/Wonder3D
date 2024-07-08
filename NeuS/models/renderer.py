@@ -285,7 +285,7 @@ class NeuSRenderer:
         # print(f'shape of sampled_color{sampled_color.shape}') # 512, 128,3 
         color = (sampled_color * weights[:, :, None]).sum(dim=1)
         if background_rgb is not None:    # Fixed background, usually black
-            color = color + background_rgb.to(device) * (1.0 - weights_sum)
+            color = color + background_rgb.to(device) * (1.0 - weights_sum) # add white layer with 1-w opacity
 
         # Eikonal loss
         gradient_error = (torch.linalg.norm(gradients.reshape(batch_size, n_samples, 3), ord=2,
