@@ -26,6 +26,7 @@ scipy
 pyransac3d
 torch_efficient_distloss
 tensorboard
+wandb
 rembg
 segment_anything
 gradio==3.50.2

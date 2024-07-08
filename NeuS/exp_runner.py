@@ -8,12 +8,13 @@ import trimesh
 import torch
 import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
+import wandb
 from shutil import copyfile
 from icecream import ic
 from tqdm import tqdm
 from pyhocon import ConfigFactory
 from models.dataset_mvdiff import Dataset
-from models.fields import RenderingNetwork, SDFNetwork, SingleVarianceNetwork, NeRF, FeatureNetwork 
+from models.fields import RenderingNetwork, SDFNetwork, SingleVarianceNetwork, NeRF, FeatureNetwork, FeatureField
 from models.renderer import NeuSRenderer, MeanRenderer
 from models.features.pca_colormap import apply_pca_colormap
 import pdb
@@ -101,7 +102,8 @@ class Runner:
         self.sdf_network = SDFNetwork(**self.conf['model.sdf_network']).to(self.device)
         self.deviation_network = SingleVarianceNetwork(**self.conf['model.variance_network']).to(self.device)
         self.color_network = RenderingNetwork(**self.conf['model.rendering_network']).to(self.device)
-        self.feature_network = FeatureNetwork(**self.conf['model.feature_network']).to(self.device)
+        # self.feature_network = FeatureNetwork(**self.conf['model.feature_network']).to(self.device)
+        self.feature_network = FeatureField(**self.conf['model.feature_field']).to(self.device)
         self.feature_render = MeanRenderer()
         # params_to_train += list(self.nerf_outside.parameters())
         params_to_train_slow += list(self.sdf_network.parameters()) #????
@@ -135,6 +137,8 @@ class Runner:
             logging.info('Find checkpoint: {}'.format(latest_model_name))
             self.load_ckpt = True
             self.load_checkpoint(latest_model_name)
+        else:
+            self.load_ckpt = False
 
         # Backup codes and configs for debug
         if self.mode[:5] == 'train':
@@ -142,17 +146,22 @@ class Runner:
 
     def train(self):
         self.writer = SummaryWriter(log_dir=os.path.join(self.base_exp_dir, 'logs'))
+        # self.writer = wandb.init(project = "NeuS with Feature Extraction")
         self.update_learning_rate()
         res_step = self.end_iter - self.iter_step
         image_perm = self.get_image_perm()
 
         num_train_epochs = math.ceil(res_step / len(self.dataloader))
 
+        num_train_epochs_geo = 4
+        num_train_epochs_feat = 4
+
+
 
         print("training ", num_train_epochs, " epoches")
 
         if not self.load_ckpt:
-            for epoch in range(7):
+            for epoch in range(num_train_epochs_geo):
                 # for iter_i in tqdm(range(res_step)):
                 print("epoch ", epoch)
                 for iter_i, data in enumerate(self.dataloader):
@@ -174,9 +183,6 @@ class Runner:
                         data[:, 13:14],
                         data[:, 14:],
                     )
-                    # breakpoint() 
-                    # print(f'true rgb color shape is {true_rgb.shape}') # bs x 3 
-                    # print(f'feature ground truth shape {feature_gt.shape}') # bs x chanel
                     # near, far = self.dataset.near_far_from_sphere(rays_o, rays_d)
                     near, far = self.dataset.get_near_far()
 
@@ -203,7 +209,7 @@ class Runner:
                     gradient_error = render_out['gradient_error']
                     weight_max = render_out['weight_max']
                     weight_sum = render_out['weight_sum']
-                    # feature = render_out['feature']
+                    feature = render_out['feature']
 
                     # Loss
                     # color_error = (color_fine - true_rgb) * mask
@@ -216,12 +222,12 @@ class Runner:
 
                     eikonal_loss = gradient_error
 
-                    # feature_errors = F.mse_loss(feature,feature_gt,reduction="none") # feature gt: bs x chanel, 512 x 384,
+                    # breakpoint()
+                    feature_errors = F.mse_loss(feature,feature_gt,reduction="none") # feature gt: bs x chanel, 512 x 384,
                     # # breakpoint()
-                    # feature_errors = feature_errors*mask
-                    # feature_loss = feature_errors.sum(dim=-1).nanmean()
+                    feature_errors = feature_errors*mask
+                    feature_loss = feature_errors.sum(dim=-1).nanmean()
 
-                    # pdb.set_trace()
                     mask_errors = F.binary_cross_entropy(weight_sum.clip(1e-3, 1.0 - 1e-3), mask, reduction='none')
                     mask_loss = ranking_loss(mask_errors[:, 0], penalize_ratio=0.8)
 
@@ -235,7 +241,6 @@ class Runner:
                         normals = normals * render_out['inside_sphere'][..., None]
                     normals = normals.sum(dim=1)
 
-                    # pdb.set_trace()
                     normal_errors = 1 - F.cosine_similarity(normals, true_normal, dim=1)
                     # normal_error = normal_error * mask[:, 0]
                     # normal_loss = F.l1_loss(normal_error, torch.zeros_like(normal_error), reduction='sum') / mask_sum
@@ -250,26 +255,27 @@ class Runner:
                         + sparse_loss * self.sparse_weight
                         + mask_loss * self.mask_weight
                         + normal_loss * self.normal_weight
-                        # + feature_loss * self.feature_weight
+                        + feature_loss * self.feature_weight
                     )
 
                     self.optimizer_geometry.zero_grad()
+                    self.optimizer_feature.zero_grad()
                     loss.backward()
                     self.optimizer_geometry.step()
+                    self.optimizer_feature.step()
 
                     self.writer.add_scalar('Loss/loss', loss, self.iter_step)
                     self.writer.add_scalar('Loss/color_loss', color_fine_loss, self.iter_step)
                     self.writer.add_scalar('Loss/eikonal_loss', eikonal_loss, self.iter_step)
-                    # self.writer.add_scalar('Loss/feature_loss', feature_loss, self.iter_step)
+                    self.writer.add_scalar('Loss/feature_loss', feature_loss, self.iter_step)
                     self.writer.add_scalar('Statistics/s_val', s_val.mean(), self.iter_step)
                     self.writer.add_scalar('Statistics/cdf', (cdf_fine[:, :1] * mask).sum() / mask_sum, self.iter_step)
                     self.writer.add_scalar('Statistics/weight_max', (weight_max * mask).sum() / mask_sum, self.iter_step)
                     self.writer.add_scalar('Statistics/psnr', psnr, self.iter_step)
 
                     if self.iter_step % self.report_freq == 0:
-                        print(self.base_exp_dir)
                         print(
-                            'iter:{:8>d} loss = {:4>f} color_ls = {:4>f} eik_ls = {:4>f} normal_ls = {:4>f} mask_ls = {:4>f} sparse_ls = {:4>f} lr={:5>f}'.format(
+                            'iter:{:8>d} loss = {:4>f} color_ls = {:4>f} eik_ls = {:4>f} normal_ls = {:4>f} mask_ls = {:4>f} sparse_ls = {:4>f} feature_ls = {:5>f} lr={:6>f}'.format(
                                 self.iter_step,
                                 loss,
                                 color_fine_loss,
@@ -277,7 +283,7 @@ class Runner:
                                 normal_loss,
                                 mask_loss,
                                 sparse_loss,
-                                # feature_loss,
+                                feature_loss,
                                 self.optimizer_geometry.param_groups[0]['lr'],
                             )
                         )
@@ -310,9 +316,9 @@ class Runner:
         # training phase 2 only train features
         # reset iter
         iter_step_feature = 0
-        for epoch in range(10):
+        for epoch in range(num_train_epochs_feat):
             # for iter_i in tqdm(range(res_step)):
-            print(f'epoch: {epoch+num_train_epochs}')
+            print(f'epoch: {epoch+num_train_epochs_geo}')
             for iter_i, data in enumerate(self.dataloader):
                 # img_idx = image_perm[self.iter_step % len(image_perm)]
                 # data = self.dataset.gen_random_rays_at(img_idx, self.batch_size)

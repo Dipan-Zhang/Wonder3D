@@ -269,9 +269,6 @@ import tinycudann as tcnn
 class FeatureNetwork(nn.Module):
     def __init__(
         self,
-        # grid_layers,
-        # grid_sizes,
-        # grid_resolutions,
         d_in=3,
         multires=0,
     ):
@@ -307,24 +304,6 @@ class FeatureNetwork(nn.Module):
             },
         )
 
-    # hashgrid embeddings
-    # @staticmethod
-    # def _get_encoding(start_res, end_res, levels, indim=3, hash_size=19):
-    #     growth = np.exp((np.log(end_res) - np.log(start_res)) / (levels - 1))
-    #     enc = tcnn.Encoding(
-    #         n_input_dims=indim,
-    #         encoding_config={
-    #             "otype": "HashGrid",
-    #             "n_levels": levels,
-    #             "n_features_per_level": 8,
-    #             "log2_hashmap_size": hash_size,
-    #             "base_resolution": start_res,
-    #             "per_level_scale": growth,
-    #         },
-    #     )
-    #     return enc
-
-
     def forward(self, input_pts):
         if self.embed_fn is not None:
             h = self.embed_fn(input_pts)
@@ -344,33 +323,89 @@ class FeatureNetwork(nn.Module):
         x = self.dino_net(h) # bs x 384
         return x
 
-    # def get_outputs(self, ray_samples: RaySamples, clip_scales) -> Dict[LERFFieldHeadNames, Float[Tensor, "bs dim"]]:
-    #     # random scales, one scale
-    #     outputs = {}
 
-    #     positions = ray_samples.frustums.get_positions().detach()
-    #     positions = self.spatial_distortion(positions)
+class FeatureField(nn.Module):
+    def __init__(
+        self,
+        feature_dim: int,
+        # spatial_distortion: SpatialDistortion,
+        # Positional encoding
+        use_pe: bool = True,
+        pe_n_freq: int = 6,
+        # Hash grid
+        num_levels: int = 12,
+        log2_hashmap_size: int = 19,
+        start_res: int = 16,
+        max_res: int = 128,
+        features_per_level: int = 8,
+        # MLP head
+        hidden_dim: int = 64,
+        num_layers: int = 2,
+    ):
+        super().__init__()
+        self.feature_dim = feature_dim
+        # self.spatial_distortion = spatial_distortion
+
+        # Feature field has its own hash grid
+        growth_factor = np.exp((np.log(max_res) - np.log(start_res)) / (num_levels - 1))
+        encoding_config = {
+            "otype": "Composite",
+            "nested": [
+                {
+                    "otype": "HashGrid",
+                    "n_levels": num_levels,
+                    "n_features_per_level": features_per_level,
+                    "log2_hashmap_size": log2_hashmap_size,
+                    "base_resolution": start_res,
+                    "per_level_scale": growth_factor,
+                }
+            ],
+        }
+
+        if use_pe: # now nested is a list with 2 elem so this mean we can have pe and hash grid at same time?
+            encoding_config["nested"].append( 
+                {
+                    "otype": "Frequency",
+                    "n_frequencies": pe_n_freq,
+                    "n_dims_to_encode": 3,
+                }
+            )
+        
+        # network for estimating features
+        self.field = tcnn.NetworkWithInputEncoding(
+            n_input_dims=3,
+            n_output_dims=self.feature_dim,
+            encoding_config=encoding_config, # ?? where would this be used?
+            network_config={
+                "otype": "FullyFusedMLP",
+                "activation": "ReLU",
+                "output_activation": "None",
+                "n_neurons": hidden_dim,
+                "n_hidden_layers": num_layers,
+            },
+        )
+
+
+    # def get_outputs(
+    #     self, ray_samples: RaySamples, density_embedding: Optional[Tensor] = None
+    # ) -> Dict[FieldHeadNames, Tensor]:
+    #     # Apply scene contraction
+    #     # breakpoint()
+    #     positions = ray_samples.frustums.get_positions().detach() # bs x num_samples 48 x 3 
+    #     positions = self.spatial_distortion(positions) #  bs x 48 x 3 
     #     positions = (positions + 2.0) / 4.0
+    #     positions_flat = positions.view(-1, 3) # bs x 48 x 3
 
-    #     xs = [e(positions.view(-1, 3)) for e in self.clip_encs]
-    #     x = torch.concat(xs, dim=-1)
+    #     # Get features
+    #     features = self.field(positions_flat).view(*ray_samples.frustums.directions.shape[:-1], -1) # bs x 48 x channel(768)
+    #     return {FeatureFieldHeadNames.FEATURE: features} 
 
-    #     outputs[LERFFieldHeadNames.HASHGRID] = x.view(*ray_samples.frustums.shape, -1)
+    def forward(self, pts):
+        # spatial distortion
+        # pts = spatial_distortion(pts)
 
-    #     clip_pass = self.clip_net(torch.cat([x, clip_scales.view(-1, 1)], dim=-1)).view(*ray_samples.frustums.shape, -1)
-    #     outputs[LERFFieldHeadNames.CLIP] = clip_pass / clip_pass.norm(dim=-1, keepdim=True)
-
-    #     dino_pass = self.dino_net(x).view(*ray_samples.frustums.shape, -1)
-    #     outputs[LERFFieldHeadNames.DINO] = dino_pass
-
-    #     return outputs
-    
-    # def get_output_from_hashgrid(self, ray_samples: RaySamples, hashgrid_field, scale):
-    #     # designated scales, run outputs for each scale
-    #     hashgrid_field = hashgrid_field.view(-1, self.clip_net.n_input_dims - 1)
-    #     clip_pass = self.clip_net(torch.cat([hashgrid_field, scale.view(-1, 1)], dim=-1)).view(
-    #         *ray_samples.frustums.shape, -1
-    #     )
-    #     output = clip_pass / clip_pass.norm(dim=-1, keepdim=True)
-
-    #     return output
+        pts_ = (pts + 2.0) / 4.0
+        pts_flat = pts_.view(-1, 3) # bs x 48 x 3
+        features = self.field(pts_flat)# bs x 48 x channel(768)
+        
+        return features
