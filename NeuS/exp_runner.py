@@ -588,27 +588,11 @@ class Runner:
         feature_img = None
         if len(out_feature) > 0:
             temp_img = (torch.cat(out_feature, axis=0).reshape([H, W, 384, -1])) # (256, 256, 384, 1) h w c N
-            temp_img_re = temp_img.permute(3,2,0,1) # N x c x h x w
-            downsampled_img = F.interpolate(temp_img_re, size=(64,64),mode = 'nearest')
-            
-            downsampled_img_re = downsampled_img.permute(0,2,3,1) # N x c x h x w -> n x h x w x c
-            feature_img = apply_pca_colormap(downsampled_img_re) # n x h x w x c(3)
+            temp_img_re = temp_img.permute(3,0,1,2) # n x h x w x c(3)
+            feature_img = apply_pca_colormap(temp_img_re) # n x h x w x c(3)
 
-            feature_img = feature_img.permute(0,3,1,2) # n h w c ->N c h w
-            feature_img = F.interpolate(feature_img, size=(H,W),mode = 'nearest')
-            feature_img = feature_img.permute(2,3,1,0).cpu().numpy() # N c h w -> h w c N
-
-            # # try without upsamping
-            # feature_img = feature_img.permute(1,2,3,0).cpu().numpy() # n h w c ->h w c N
-
+            feature_img = feature_img.permute(1,2,3,0).cpu().numpy() # N h w c -> h w c N
             feature_img = (feature_img*256).clip(0,255)
-
-
-            #     #TODO save feature embeddings also here
-
-            #     temp_img  = apply_pca_colormap(out_feature[i]).cpu().numpy() # 512 x 3
-            #     feature_img = np.concatenate(temp_img, axis=0)
-            # feature_img = np.concatenate(out_normal_fine, axis=0)
 
         os.makedirs(os.path.join(self.base_exp_dir, 'validations_fine'), exist_ok=True)
         os.makedirs(os.path.join(self.base_exp_dir, 'normals'), exist_ok=True)

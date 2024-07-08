@@ -235,8 +235,8 @@ class Dataset:
         
         # load features
         features = extract_features(self.data_dir,self.object_name,'DINO', view_types, normal_system=self.normal_system) # # [n_images, 55, 55, 384]
-        self.features = expand_features(features, self.imSize) # [n_images, H, W, 384]
-        self.features_rgb_np = apply_pca_colormap(self.features).cpu().numpy() * 255
+        self.features = expand_features(features, self.imSize) # [n_images, H, W, 384] #! get rid of this when oom
+        # self.features_rgb_np = apply_pca_colormap(self.features).cpu().numpy() * 255
 
         self.n_images = self.images_np.shape[0]
 
@@ -422,10 +422,10 @@ class Dataset:
         mask = np.concatenate([mask]*3, axis=-1)
         return (cv2.resize(mask, (self.W // resolution_level, self.H // resolution_level))).clip(0, 255)
     
-    def feature_at(self,idx,resolution_level):
-        feature = self.features_rgb_np[idx]
-        # breakpoint()
-        return (cv2.resize(feature, (self.W // resolution_level, self.H // resolution_level))).clip(0, 255)
+    # def feature_at(self,idx,resolution_level):
+    #     feature = self.features_rgb_np[idx]
+    #     # breakpoint()
+    #     return (cv2.resize(feature, (self.W // resolution_level, self.H // resolution_level))).clip(0, 255)
 
 
 
