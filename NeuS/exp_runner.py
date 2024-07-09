@@ -101,8 +101,8 @@ class Runner:
         self.sdf_network = SDFNetwork(**self.conf['model.sdf_network']).to(self.device)
         self.deviation_network = SingleVarianceNetwork(**self.conf['model.variance_network']).to(self.device)
         self.color_network = RenderingNetwork(**self.conf['model.rendering_network']).to(self.device)
-        # self.feature_network = FeatureNetwork(**self.conf['model.feature_network']).to(self.device)
-        self.feature_network = FeatureField(**self.conf['model.feature_field']).to(self.device)
+        self.feature_network = FeatureNetwork(**self.conf['model.feature_network']).to(self.device)
+        # self.feature_network = FeatureField(**self.conf['model.feature_field']).to(self.device)
         self.feature_render = MeanRenderer()
         # params_to_train += list(self.nerf_outside.parameters())
         params_to_train_slow += list(self.sdf_network.parameters()) #????
@@ -145,6 +145,7 @@ class Runner:
 
     def train(self):
         self.writer = wandb.init(project = "NeuS with Feature Extraction",
+                                 mode="disabled",
                                 #  name='te',
                                  )
         self.update_learning_rate()
@@ -213,9 +214,6 @@ class Runner:
                     feature = render_out['feature']
 
                     # Loss
-                    # color_error = (color_fine - true_rgb) * mask
-                    # color_fine_loss = F.l1_loss(color_error, torch.zeros_like(color_error), reduction='sum') / mask_sum
-
                     color_errors = (color_fine - true_rgb).abs().sum(dim=1) 
                     color_fine_loss = ranking_loss(color_errors[mask[:, 0] > 0])
 
@@ -223,12 +221,9 @@ class Runner:
 
                     eikonal_loss = gradient_error
 
-                    # breakpoint()
                     feature_errors = F.mse_loss(feature,feature_gt,reduction="none") # feature gt: bs x chanel, 512 x 384,
-                    # # breakpoint()
-                    if not sequential_train:
-                        feature_errors = feature_errors*mask
-                        feature_loss = feature_errors.sum(dim=-1).nanmean()
+                    feature_errors = feature_errors*mask
+                    feature_loss = feature_errors.sum(dim=-1).nanmean()
 
                     mask_errors = F.binary_cross_entropy(weight_sum.clip(1e-3, 1.0 - 1e-3), mask, reduction='none')
                     mask_loss = ranking_loss(mask_errors[:, 0], penalize_ratio=0.8)
@@ -251,70 +246,53 @@ class Runner:
 
                     sparse_loss = render_out['sparse_loss']
 
-                    if not sequential_train:
-                        loss = (
-                            color_fine_loss * self.color_weight
-                            + eikonal_loss * self.igr_weight
-                            + sparse_loss * self.sparse_weight
-                            + mask_loss * self.mask_weight
-                            + normal_loss * self.normal_weight
-                            + feature_loss * self.feature_weight
-                        )
+                    if sequential_train: # if sequential traing: here don't take feature loss into account
+                        feature_loss = 0
+          
+                    loss = (
+                        color_fine_loss * self.color_weight
+                        + eikonal_loss * self.igr_weight
+                        + sparse_loss * self.sparse_weight
+                        + mask_loss * self.mask_weight
+                        + normal_loss * self.normal_weight
+                        + feature_loss * self.feature_weight
+                    )
+                    metrics = {'iterstep': self.iter_step,
+                            'Loss/loss': loss,
+                            'Loss/color_loss': color_fine_loss,
+                            'Loss/normal_loss': normal_loss,
+                            'Loss/mask_loss': mask_loss,
+                            'Loss/eikonal_loss': eikonal_loss,
+                            'Loss/feature_loss': feature_loss,
+                            'Statistics/s_val': s_val.mean(), 
+                            'Statistics/cdf': (cdf_fine[:, :1] * mask).sum() / mask_sum,
+                            'Statistics/weight_max': (weight_max * mask).sum() / mask_sum,
+                            'Statistics/psnr': psnr
+                    }
 
-                        self.optimizer_geometry.zero_grad()
+                    self.optimizer_geometry.zero_grad()
+                    if sequential_train:
                         self.optimizer_feature.zero_grad()
-                        loss.backward()
-                        self.optimizer_geometry.step()
+                   
+                    loss.backward()
+
+                    self.optimizer_geometry.step()
+                    if sequential_train:
                         self.optimizer_feature.step()
-
-                        metrics = {'iterstep': self.iter_step,
-                                'Loss/loss': loss,
-                                'Loss/color_loss': color_fine_loss,
-                                'Loss/normal_loss': normal_loss,
-                                'Loss/mask_loss': mask_loss,
-                                'Loss/eikonal_loss': eikonal_loss,
-                                'Loss/feature_loss': feature_loss,
-                                'Statistics/s_val': s_val.mean(), 
-                                'Statistics/cdf': (cdf_fine[:, :1] * mask).sum() / mask_sum,
-                                'Statistics/weight_max': (weight_max * mask).sum() / mask_sum,
-                                'Statistics/psnr': psnr
-                        }
-                    else:  #if sequential train: here no feature loss and update
-                        loss = (
-                            color_fine_loss * self.color_weight
-                            + eikonal_loss * self.igr_weight
-                            + sparse_loss * self.sparse_weight
-                            + mask_loss * self.mask_weight
-                            + normal_loss * self.normal_weight
-                        )
-
-                        self.optimizer_geometry.zero_grad()
-                        loss.backward()
-                        self.optimizer_geometry.step()
-
-                        metrics = {'iterstep': self.iter_step,
-                                'Loss/loss': loss,
-                                'Loss/color_loss': color_fine_loss,
-                                'Loss/normal_loss': normal_loss,
-                                'Loss/mask_loss': mask_loss,
-                                'Loss/eikonal_loss': eikonal_loss,
-                                'Statistics/s_val': s_val.mean(), 
-                                'Statistics/cdf': (cdf_fine[:, :1] * mask).sum() / mask_sum,
-                                'Statistics/weight_max': (weight_max * mask).sum() / mask_sum,
-                                'Statistics/psnr': psnr
-                        }
+            
+                    
                     self.writer.log(metrics)
                     if self.iter_step % self.report_freq == 0:
                         print(
-                            'iter:{:8>d} loss = {:4>f} color_ls = {:4>f} eik_ls = {:4>f} normal_ls = {:4>f} mask_ls = {:4>f} sparse_ls = {:4>f} feature_ls = {:5>f} lr={:6>f}'.format(
+                            'iter:{:8>d} loss = {:4>f} color_ls = {:4>f} eik_ls = {:4>f} normal_ls = {:4>f} mask_ls = {:4>f} feature_ls = {:4>f} sparse_ls = {:4>f} lr={:6>f}'.format(
                                 self.iter_step,
                                 loss,
                                 color_fine_loss,
                                 eikonal_loss,
                                 normal_loss,
                                 mask_loss,
-                                sparse_loss,
                                 feature_loss,
+                                sparse_loss,
                                 self.optimizer_geometry.param_groups[0]['lr'],
                             )
                         )
@@ -359,11 +337,6 @@ class Runner:
                     data[:, :3],
                     data[:, 3:6],
                     data[:, 6:9],
-                    # # data[:, 9:10], # mask from image without bg
-                    # data[:, 10:11], # mask from pic with bg
-                    # data[:, 11:14],
-                    # data[:, 14:15],
-                    # data[:, 15:],
                     data[:, 9:10],
                     data[:, 10:13],
                     data[:, 13:14],
@@ -387,57 +360,13 @@ class Runner:
                 render_out = self.renderer.render(
                     rays_o, rays_d, near, far, background_rgb=background_rgb, cos_anneal_ratio=self.get_cos_anneal_ratio()
                 )
-
-                # color_fine = render_out['color_fine']
-                # s_val = render_out['s_val']
-                # cdf_fine = render_out['cdf_fine']
-                # gradient_error = render_out['gradient_error']
-                # weight_max = render_out['weight_max']
-                # weight_sum = render_out['weight_sum']
                 feature = render_out['feature']
 
-                # Loss
-                # color_error = (color_fine - true_rgb) * mask
-                # color_fine_loss = F.l1_loss(color_error, torch.zeros_like(color_error), reduction='sum') / mask_sum
-
-                # color_errors = (color_fine - true_rgb).abs().sum(dim=1) 
-                # color_fine_loss = ranking_loss(color_errors[mask[:, 0] > 0])
-
-                # psnr = 20.0 * torch.log10(1.0 / (((color_fine - true_rgb) ** 2 * mask).sum() / (mask_sum * 3.0)).sqrt())
-
-                # eikonal_loss = gradient_error
-
                 feature_errors = F.mse_loss(feature,feature_gt,reduction="none") # feature gt: bs x chanel, 512 x 384,
-                # breakpoint()
                 feature_errors = feature_errors*mask
                 feature_loss = feature_errors.sum(dim=-1).nanmean()
 
-                # # pdb.set_trace()
-                # mask_errors = F.binary_cross_entropy(weight_sum.clip(1e-3, 1.0 - 1e-3), mask, reduction='none')
-                # mask_loss = ranking_loss(mask_errors[:, 0], penalize_ratio=0.8)
-
-                # # calculate normal loss
-                # n_samples = self.renderer.n_samples + self.renderer.n_importance
-                # normals = render_out['gradients'] * render_out['weights'][:, :n_samples, None]
-                # if feasible('inside_sphere'):
-                #     normals = normals * render_out['inside_sphere'][..., None]
-                # normals = normals.sum(dim=1)
-
-                # # pdb.set_trace()
-                # normal_errors = 1 - F.cosine_similarity(normals, true_normal, dim=1)
-                # # normal_error = normal_error * mask[:, 0]
-                # # normal_loss = F.l1_loss(normal_error, torch.zeros_like(normal_error), reduction='sum') / mask_sum
-                # normal_errors = normal_errors * torch.exp(cosines.abs()[:, 0]) / torch.exp(cosines.abs()).sum()
-                # normal_loss = ranking_loss(normal_errors[mask[:, 0] > 0], penalize_ratio=0.9, type='sum')
-
-                sparse_loss = render_out['sparse_loss']
-
                 loss = (
-                    # color_fine_loss * self.color_weight
-                    # + eikonal_loss * self.igr_weight
-                    # + sparse_loss * self.sparse_weight
-                    # + mask_loss * self.mask_weight
-                    # + normal_loss * self.normal_weight
                     feature_loss * self.feature_weight
                 )
 
@@ -445,15 +374,19 @@ class Runner:
                 loss.backward()
                 self.optimizer_feature.step()
    
+                # keep some terms to have consistency as recording before
                 metrics = {'iterstep': self.iter_step,
-                            'Loss/loss': loss,
-                            'Loss/eikonal_loss': eikonal_loss,
-                            'Loss/feature_loss': feature_loss,
-                            'Statistics/s_val': s_val.mean(), 
-                            'Statistics/cdf': (cdf_fine[:, :1] * mask).sum() / mask_sum,
-                            'Statistics/weight_max': (weight_max * mask).sum() / mask_sum,
-                            'Statistics/psnr': psnr
-                }
+                                'Loss/loss': loss,
+                                'Loss/color_loss': color_fine_loss,
+                                'Loss/normal_loss': normal_loss,
+                                'Loss/mask_loss': mask_loss,
+                                'Loss/feature_loss': feature_loss,
+                                'Loss/eikonal_loss': eikonal_loss,
+                                'Statistics/s_val': s_val.mean(), 
+                                'Statistics/cdf': (cdf_fine[:, :1] * mask).sum() / mask_sum,
+                                'Statistics/weight_max': (weight_max * mask).sum() / mask_sum,
+                                'Statistics/psnr': psnr
+                        }
                 self.writer.log(metrics)
 
                 if self.iter_step % self.report_freq == 0:
@@ -465,7 +398,6 @@ class Runner:
                             self.optimizer_feature.param_groups[0]['lr'],
                         )
                     )
-                    # print('iter:{:8>d} s_val = {:4>f}'.format(self.iter_step, s_val.mean()))
 
                 if self.iter_step % self.val_mesh_freq == 0:
                     self.validate_mesh(resolution=256)
@@ -611,8 +543,7 @@ class Runner:
         # out_rgb_fine 128 x 512 x 3
         img_fine = None
         if len(out_rgb_fine) > 0:
-            # concatenate  (65536, 3) -> reshape  (256, 256, 3, 1)
-            img_fine = (np.concatenate(out_rgb_fine, axis=0).reshape([H, W, 3, -1]) * 256).clip(0, 255)
+            img_fine = (np.concatenate(out_rgb_fine, axis=0).reshape([H, W, 3, -1]) * 256).clip(0, 255)  # concatenate  (65536, 3) -> reshape  (256, 256, 3, 1)
 
         mask_map = None
         if len(out_mask) > 0:
@@ -651,36 +582,28 @@ class Runner:
                         ]
                     ),
                 )
-                # wandb.log({f"viewpoint_{idx}_rgb": wandb.Image(img_fine[..., i], caption=f"ID {idx} at Step {self.iter_step}")})
-                
-                log_images.append(wandb.Image(img_fine[..., i], caption=f"ID {idx} at Step {self.iter_step}"))
+                log_images.append(wandb.Image(img_fine[..., i], caption=f"rgb"))
 
             if len(out_normal_fine) > 0:
                 cv.imwrite(
                     os.path.join(self.base_exp_dir, 'normals', '{:0>8d}_{}_{}.png'.format(self.iter_step, i, idx)),
                     np.concatenate([normal_img[..., i], self.dataset.normal_cam_at(idx, resolution_level=resolution_level)])[:, :, ::-1],
                 )
-                # wandb.log({"normals": wandb.Image(normal_img[..., i], caption=f"Step {self.iter_step}, Index {i}, ID {idx}")})
+                log_images.append(wandb.Image(normal_img[..., i], caption=f"normal image"))
 
             if len(out_mask) > 0:
                 cv.imwrite(os.path.join(self.base_exp_dir, 'normals', '{:0>8d}_{}_{}_mask.png'.format(self.iter_step, i, idx)), mask_map[..., i])
-                # wandb.log({"mask": wandb.Image(mask_map[..., i], caption=f"Step {self.iter_step}, Index {i}, ID {idx}")})
-            # breakpoint()
+                log_images.append(wandb.Image(mask_map[..., i], caption=f"mask image"))
+                
             if len(out_feature) > 0:
                 cv.imwrite(
                     os.path.join(self.base_exp_dir, 'feature', '{:0>8d}_{}_{}.png'.format(self.iter_step, i, idx)),
                     np.concatenate([feature_img[..., i]])[:, :, ::-1],
                 )
-                # wandb.log({f"viewpoint_{idx}_feature": wandb.Image(feature_img[..., i], caption=f" ID {idx} at Step {self.iter_step}")})
-                log_images.append(wandb.Image(feature_img[..., i], caption=f"ID {idx} at Step {self.iter_step}"))
-
-
+                log_images.append(wandb.Image(feature_img[..., i], caption=f"feature image"))
             wandb.log({f"viewpoint_{idx}": log_images})
-                
-
- 
-        # use wandb log images
     
+
     #? functionality ??? 
     def save_maps(self, idx, img_idx, resolution_level=1):
         view_types = ['front', 'back', 'left', 'right']
