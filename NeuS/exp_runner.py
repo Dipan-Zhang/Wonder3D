@@ -101,8 +101,8 @@ class Runner:
         self.sdf_network = SDFNetwork(**self.conf['model.sdf_network']).to(self.device)
         self.deviation_network = SingleVarianceNetwork(**self.conf['model.variance_network']).to(self.device)
         self.color_network = RenderingNetwork(**self.conf['model.rendering_network']).to(self.device)
-        self.feature_network = FeatureNetwork(**self.conf['model.feature_network']).to(self.device)
-        # self.feature_network = FeatureField(**self.conf['model.feature_field']).to(self.device)
+        # self.feature_network = FeatureNetwork(**self.conf['model.feature_network']).to(self.device)
+        self.feature_network = FeatureField(**self.conf['model.feature_field']).to(self.device)
         self.feature_render = MeanRenderer()
         # params_to_train += list(self.nerf_outside.parameters())
         params_to_train_slow += list(self.sdf_network.parameters()) #????
@@ -145,21 +145,23 @@ class Runner:
 
     def train(self):
         self.writer = wandb.init(project = "NeuS with Feature Extraction",
-                                 mode="disabled",
-                                #  name='te',
+                                #  mode="disabled",
                                  )
         self.update_learning_rate()
         res_step = self.end_iter - self.iter_step
         image_perm = self.get_image_perm()
 
-        num_train_epochs = math.ceil(res_step / len(self.dataloader))
+        # num_train_epochs = math.ceil(res_step / len(self.dataloader))
 
-        num_train_epochs_geo = 8
-        num_train_epochs_feat = 5
-        sequential_train = True
+        sequential_train = False
+        num_train_epochs_geo = 12 # 12 for together, 7 for seq
 
+        if sequential_train:
+            num_train_epochs_feat = 5
+        else:
+            num_train_epochs_feat = 0 
 
-        print("training ", num_train_epochs, " epoches")
+        print("training ", num_train_epochs_geo+num_train_epochs_feat, " epoches")
 
 
         if not self.load_ckpt:
@@ -223,7 +225,11 @@ class Runner:
 
                     feature_errors = F.mse_loss(feature,feature_gt,reduction="none") # feature gt: bs x chanel, 512 x 384,
                     feature_errors = feature_errors*mask
-                    feature_loss = feature_errors.sum(dim=-1).nanmean()
+
+                    if sequential_train: 
+                        feature_loss = 0 # if sequential traing: here don't take feature loss into account
+                    else:    
+                        feature_loss = feature_errors.sum(dim=-1).nanmean() # train together -> compute feature loss
 
                     mask_errors = F.binary_cross_entropy(weight_sum.clip(1e-3, 1.0 - 1e-3), mask, reduction='none')
                     mask_loss = ranking_loss(mask_errors[:, 0], penalize_ratio=0.8)
@@ -246,8 +252,6 @@ class Runner:
 
                     sparse_loss = render_out['sparse_loss']
 
-                    if sequential_train: # if sequential traing: here don't take feature loss into account
-                        feature_loss = 0
           
                     loss = (
                         color_fine_loss * self.color_weight
@@ -271,13 +275,17 @@ class Runner:
                     }
 
                     self.optimizer_geometry.zero_grad()
-                    if sequential_train:
+                    if sequential_train: 
+                        pass
+                    else:
                         self.optimizer_feature.zero_grad()
                    
                     loss.backward()
 
                     self.optimizer_geometry.step()
                     if sequential_train:
+                        pass
+                    else:
                         self.optimizer_feature.step()
             
                     
@@ -341,6 +349,10 @@ class Runner:
                     data[:, 10:13],
                     data[:, 13:14],
                     data[:, 14:],
+                    # data[:, 10:11], # mask from pic with bg
+                    # data[:, 11:14],
+                    # data[:, 14:15],
+                    # data[:, 15:],
                 )
                 near, far = self.dataset.get_near_far()
 
@@ -446,7 +458,7 @@ class Runner:
         else:
             alpha = self.learning_rate_alpha
             progress = (iter_step - self.warm_up_end) / (self.end_iter - self.warm_up_end)
-            learning_factor = (np.cos(np.pi * progress) + 1.0) * 0.5 * (1 - alpha) + alpha
+            learning_factor = (np.cos(np.pi * progress) + 1.0) * 0.5 * (1 - alpha) + alpha # starting from 1 to alpha
 
         for g in self.optimizer_feature.param_groups:
             g['lr'] = self.learning_rate * learning_factor
@@ -767,6 +779,7 @@ if __name__ == '__main__':
         for i in range(4): 
             runner.save_maps(idx=i, img_idx=runner.dataset.object_viewidx)
     elif args.mode == 'validate_mesh':
+        # TODO load trained checkpoint?
         runner.validate_mesh(world_space=False, resolution=512, threshold=args.mcube_threshold)
     elif args.mode.startswith('interpolate'):  # Interpolate views given two image indices
         _, img_idx_0, img_idx_1 = args.mode.split('_')

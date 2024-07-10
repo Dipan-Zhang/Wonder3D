@@ -10,6 +10,8 @@ from scipy.spatial.transform import Slerp
 import PIL.Image
 from glob import glob
 import pdb
+import matplotlib.pyplot as plt
+from PIL import Image
 
 from models.features.clip_extract import CLIPArgs, extract_clip_features
 from models.features.dino_extract import DINOArgs, extract_dino_features
@@ -93,11 +95,12 @@ def load_a_prediction(root_dir, test_object, imSize, view_types, load_color=Fals
     RT_front_cv = RT_opengl2opencv(RT_front)   # convert normal from opengl to opencv
 
     for idx, view in enumerate(view_types):
-        # print(os.path.join(root_dir,test_object))
-        normal_filepath = os.path.join(root_dir,test_object, 'masked_normals','normals_000_%s.png'%(view))
+        # originally use masked normal and unmasked rgb
+        normal_filepath = os.path.join(root_dir,test_object, 'masked_normals','normals_000_%s.png'%(view)) # here use unmasked
         # Load key frame
         if load_color:  # whether use bg?
-            image =np.array(PIL.Image.open(normal_filepath.replace("normals", "rgb")).resize(imSize))[:, :, ::-1]
+            rgb_filepath = os.path.join(root_dir,test_object, 'rgb','rgb_000_%s.png'%(view)) # here use unmasked
+            image =np.array(PIL.Image.open(rgb_filepath).resize(imSize))[:, :, ::-1]
 
 
         normal = np.array(PIL.Image.open(normal_filepath).resize(imSize))
@@ -144,7 +147,7 @@ def expand_features(features,img_size):
 
     return expanded_features
 
-def extract_features(root_dir, test_object,feat_type, view_types, normal_system='front'):
+def extract_features(root_dir, test_object,feat_type, view_types, normal_system='front', visualize=False):
 
     """Extract features with support for caching.
     return features
@@ -154,44 +157,59 @@ def extract_features(root_dir, test_object,feat_type, view_types, normal_system=
     "DINO": extract_dino_features,
     }
 
-    # feat_type_to_args = {
-    #     "CLIP": CLIPArgs,
-    #     "DINO": DINOArgs,
-    # }
-
+    if feat_type == "CLIP":
+        raise NotImplementedError
+    
     extract_fn = feat_type_to_extract_fn[feat_type]
-    # extract_args = feat_type_to_args[self.config.feature_type]
     image_fnames = []
     for idx, view in enumerate(view_types):
-        rgb_filepath = os.path.join(root_dir, test_object, 'masked_rgb','rgb_000_%s.png'%(view))
+        rgb_filepath = os.path.join(root_dir, test_object, 'rgb','rgb_000_%s.png'%(view))
         image_fnames.append(rgb_filepath)
    
-    # print(image_fnames)
-    # If cache exists, load it and validate it. We save it to the dataset directory.
     cache_dir = os.path.join(root_dir,'cache')
     cache_path = cache_dir + f"/{test_object}_features.pt"
 
-    # check whether cache exists # TODO, change the structure here when enable cache = False
     enable_cache= True
     if enable_cache and os.path.exists(cache_path):
-        print('load from dataset')
         cache_dict = torch.load(cache_path)
         if cache_dict.get("image_fnames") != image_fnames:
-            print("Image filenames have changed, cache invalidated...")
-        # elif cache_dict.get("args") != extract_args.id_dict():
-        #     print("Feature extraction args have changed, cache invalidated...")
+            print("Image filenames have changed, cache invalidated... Reextract features from images")
+            features = extract_fn(image_fnames, device='cuda')
+            return features
         else:
+            print(f'load cached feature from {cache_path}')
             return cache_dict["features"]
     else:
         # Cache is invalid or doesn't exist, so extract features
         print(f"Extracting {feat_type} features for {len(image_fnames)} images...")
         features = extract_fn(image_fnames, device='cuda')
         
+        if visualize == True:
+            feature_pca = []
+            for feature in features:
+                feature_pca.append(apply_pca_colormap(feature).cpu().numpy())
+            plt.figure()
+            plt.suptitle("Visualize extracted PCA features")
+
+            for i, (image_path, dino_pca_) in enumerate(zip(image_fnames, feature_pca)):
+                plt.subplot(2, len(image_fnames), i + 1)
+                plt.imshow(Image.open(image_path))
+                plt.title(os.path.basename(image_path))
+                plt.axis("off")
+
+                plt.subplot(2, len(image_fnames), len(image_fnames) + i + 1)
+                plt.imshow(dino_pca_)
+                plt.axis("off")
+
+            plt.tight_layout()
+            plt.savefig("demo_extract_features.png")
+            print("Saved plot to demo_extract_features.png")
+            plt.show()
+        
+
         if enable_cache: # save to cache
-            # cache_dict = {"args": extract_args.id_dict(), "image_fnames": image_fnames, "features": features}
             cache_dict = {"image_fnames": image_fnames, "features": features}
-            # cache_dir.mkdir(exist_ok=True)
-            os.mkdir(cache_dir)
+            os.makedirs(cache_dir,exist_ok=True)
             torch.save(cache_dict, cache_path)
             print(f"Saved {feat_type} features to cache at {cache_path}")
 
