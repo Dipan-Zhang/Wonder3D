@@ -14,7 +14,7 @@ from tqdm import tqdm
 from pyhocon import ConfigFactory
 from models.dataset_mvdiff import Dataset
 from models.fields import RenderingNetwork, SDFNetwork, SingleVarianceNetwork, NeRF, FeatureNetwork, FeatureField
-from models.renderer import NeuSRenderer, MeanRenderer
+from models.renderer import NeuSRenderer, MeanRenderer, select_vertices_and_update_triangles
 from models.features.pca_colormap import apply_pca_colormap
 import pdb
 import math
@@ -68,6 +68,7 @@ class Runner:
             num_workers=64,
         )
         self.iter_step = 1
+        self.case_name = case
 
         # Training parameters
         self.end_iter = self.conf.get_int('train.end_iter')
@@ -145,7 +146,7 @@ class Runner:
 
     def train(self):
         self.writer = wandb.init(project = "NeuS with Feature Extraction",
-                                #  mode="disabled",
+                                 mode="disabled",
                                  )
         self.update_learning_rate()
         res_step = self.end_iter - self.iter_step
@@ -719,14 +720,20 @@ class Runner:
         vertices, triangles, vertex_colors = self.renderer.extract_geometry(bound_min, bound_max, resolution=resolution, threshold=threshold)
         os.makedirs(os.path.join(self.base_exp_dir, 'meshes'), exist_ok=True)
 
+        # selected_vertices, selected_triangles = select_vertices_and_update_triangles(vertices, triangles) # TODO can use this to reduce memory usage?
+        feature_vertices_rgb = self.renderer.fuse_feature2mesh(vertices) 
+        feature_vertices_rgb_np = (feature_vertices_rgb.cpu().detach().numpy() * 255).clip(0, 255)
+
         if world_space:
             vertices = vertices * self.dataset.scale_mats_np[0][0, 0] + self.dataset.scale_mats_np[0][:3, 3][None]
 
         mesh = trimesh.Trimesh(vertices, triangles, vertex_colors=vertex_colors)
-        # mesh.export(os.path.join(self.base_exp_dir, 'meshes', '{:0>8d}.ply'.format(self.iter_step)))
         # export as glb
-        mesh.export(os.path.join(self.base_exp_dir, 'meshes', 'tmp.glb'))
+        mesh.export(os.path.join(self.base_exp_dir, 'meshes', f'{self.case_name}_mesh_{self.iter_step}.glb'))
 
+        mesh = trimesh.Trimesh(vertices, triangles, vertex_colors=feature_vertices_rgb_np)
+        mesh.export(os.path.join(self.base_exp_dir, 'meshes', f'{self.case_name}_feature_{self.iter_step}.glb'))
+        del mesh
         logging.info('End')
 
     def interpolate_view(self, img_idx_0, img_idx_1):

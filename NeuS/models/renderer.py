@@ -9,6 +9,8 @@ import pdb
 from torch import Tensor
 from jaxtyping import Float
 
+from models.features.pca_colormap import apply_pca_colormap
+
 def extract_fields(bound_min, bound_max, resolution, query_func):
     N = 64
     X = torch.linspace(bound_min[0], bound_max[0], resolution).split(N)
@@ -29,14 +31,14 @@ def extract_fields(bound_min, bound_max, resolution, query_func):
 
 def extract_geometry(bound_min, bound_max, resolution, threshold, query_func, color_func):
     print('threshold: {}'.format(threshold))
-    u = extract_fields(bound_min, bound_max, resolution, query_func)
-    vertices, triangles = mcubes.marching_cubes(u, threshold)
-    b_max_np = bound_max.detach().cpu().numpy()
-    b_min_np = bound_min.detach().cpu().numpy()
+    u = extract_fields(bound_min, bound_max, resolution, query_func) # u 512x512x512 
+    vertices, triangles = mcubes.marching_cubes(u, threshold) # vertices (338288, 3) xyz, triangle (676572, 3) indices at each row
+    b_max_np = bound_max.detach().cpu().numpy() # [1.01, 1.01, 1.01]
+    b_min_np = bound_min.detach().cpu().numpy() # [-1.01, -1.01, -1.01]
 
-    vertices = vertices / (resolution - 1.0) * (b_max_np - b_min_np)[None, :] + b_min_np[None, :]
+    vertices = vertices / (resolution - 1.0) * (b_max_np - b_min_np)[None, :] + b_min_np[None, :] # normalize >?
 
-    vertices_color = color_func(vertices)
+    vertices_color = color_func(vertices) # n x 3
 
     return vertices, triangles, vertices_color
 
@@ -74,6 +76,35 @@ def sample_pdf(bins, weights, n_samples, det=False):
 
     return samples
 
+def select_vertices_and_update_triangles(vertices, triangles, fraction=0.8):
+    # Number of vertices
+    num_vertices = vertices.shape[0]
+
+    # Calculate the number of vertices to select
+    num_to_select = int(num_vertices * fraction)
+
+    # Randomly select indices of vertices to keep
+    selected_indices = np.random.choice(num_vertices, num_to_select, replace=False)
+    selected_indices.sort()  # Sorting helps with creating the new indices map
+
+    # Create a map from old indices to new indices
+    index_map = {old_idx: new_idx for new_idx, old_idx in enumerate(selected_indices)}
+
+    # Select the vertices using the selected indices
+    selected_vertices = vertices[selected_indices]
+
+    # Filter and update the triangles
+    new_triangles = []
+    for tri in triangles:
+        # Check if all vertices of the triangle are in the selected indices
+        if all(v in index_map for v in tri):
+            # Map the old indices to the new indices
+            new_triangles.append([index_map[v] for v in tri])
+
+    # Convert new_triangles to a numpy array
+    new_triangles = np.array(new_triangles)
+
+    return selected_vertices, new_triangles
 
 class NeuSRenderer:
     def __init__(self,
@@ -453,6 +484,23 @@ class NeuSRenderer:
                                 threshold=threshold,
                                 query_func=lambda pts: -self.sdf_network.sdf(pts),
                                 color_func=lambda pts: self.get_vertex_colors(pts))
+    
+    # TODO, put this function into extract geometry?? -> aovid extra cost of cuda -> cpu -> cuda -> cpu L724 at exp_runner
+    def fuse_feature2mesh(self,vertices):
+
+        vertices_tensor = torch.tensor(vertices, device='cuda') # TODO temp fix
+
+        # fed into feature_field and get feature
+        vertices_feature = self.feature_network(vertices_tensor) # n x chanel ([94260, 384]) 
+
+        # pca get color results, delete feature
+        feature_rgb = apply_pca_colormap(vertices_feature.to(torch.float32)) # n x 3 (rgb)
+
+        del vertices_feature
+
+        return feature_rgb
+        # return pca and save to mesh file 
+
 
 
 class MeanRenderer(nn.Module):
