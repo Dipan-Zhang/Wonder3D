@@ -1,5 +1,6 @@
 import os
 from typing import Dict, Optional, Tuple, List
+import argparse
 from omegaconf import OmegaConf
 from PIL import Image
 import cv2
@@ -204,9 +205,14 @@ def log_validation_joint(dataloader, pipeline, cfg: TestConfig, weight_dtype, na
                     scene = filename[i]
                     scene_dir = os.path.join(cur_dir, scene)
                     normal_dir = os.path.join(scene_dir, "normals")
-                    masked_colors_dir = os.path.join(scene_dir, "masked_colors")
+                    masked_normal_dir = os.path.join(scene_dir, "masked_normals")
+                    masked_colors_dir = os.path.join(scene_dir, "masked_rgb")
+                    colors_dir = os.path.join(scene_dir, "rgb")
+
                     os.makedirs(normal_dir, exist_ok=True)
+                    os.makedirs(masked_normal_dir, exist_ok=True)
                     os.makedirs(masked_colors_dir, exist_ok=True)
+                    os.makedirs(colors_dir, exist_ok=True)
                     for j in range(num_views):
                         view = VIEWS[j]
                         idx = i*num_views + j
@@ -216,12 +222,12 @@ def log_validation_joint(dataloader, pipeline, cfg: TestConfig, weight_dtype, na
                         normal_filename = f"normals_000_{view}.png"
                         rgb_filename = f"rgb_000_{view}.png"
                         normal = save_image(normal, os.path.join(normal_dir, normal_filename))
-                        color = save_image(color, os.path.join(scene_dir, rgb_filename))
+                        color = save_image(color, os.path.join(colors_dir, rgb_filename))
 
                         rm_normal = remove(normal)
                         rm_color = remove(color)
 
-                        save_image_numpy(rm_normal, os.path.join(scene_dir, normal_filename))
+                        save_image_numpy(rm_normal, os.path.join(masked_normal_dir, normal_filename))
                         save_image_numpy(rm_color, os.path.join(masked_colors_dir, rgb_filename))
 
     torch.cuda.empty_cache()
