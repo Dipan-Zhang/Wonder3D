@@ -18,7 +18,6 @@
 import torch
 from reconstruct.loss_utils import decode_sdf, get_batch_sdf_jacobian, get_points_to_pose_jacobian_sim3, sdf_to_occupancy
 
-
 def compute_sdf_loss(sdf, pts_surface_cam, t_obj_cam):
     """
     # :param decoder: DeepSDF decoder

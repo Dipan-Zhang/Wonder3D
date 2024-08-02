@@ -52,9 +52,10 @@ class Optimizer(object):
         # :param code: shape code
         :return: optimized o2c transformation
         """
-        t_cam_obj = torch.from_numpy(t_co_se3).to(torch.float32)
+        t_cam_obj = torch.from_numpy(t_co_se3).float()
         t_cam_obj[:3, :3] *= scale
         t_obj_cam = torch.inverse(t_cam_obj)
+
         # latent_vector = torch.from_numpy(code).cuda() # SDF coming from code
         pts_surface = torch.from_numpy(pts).cuda()
         
@@ -84,14 +85,15 @@ class Optimizer(object):
         iter = 0
         while sdf_loss > 0.0002:
             iter +=1
-            start = get_time()
             # 1. Compute SDF (3D) loss
-            # breakpoint()
+            # breakpoint()  
+
             de_dsim3_sdf, res_sdf = \
                 compute_sdf_loss(self.sdf, pts_surface,
                                       t_obj_cam)
-            _, sdf_loss, _ = get_robust_res(res_sdf, 0.05)
-
+            
+            robust_res_sdf, sdf_loss, _ = get_robust_res(res_sdf, 0.05) # generate huber loss
+            # breakpoint()
             j_sdf = de_dsim3_sdf[..., :6]
             hess = torch.bmm(j_sdf.transpose(-2, -1), j_sdf).sum(0).squeeze().cpu() / j_sdf.shape[0]
             hess += 1e-2 * torch.eye(6)
@@ -99,7 +101,6 @@ class Optimizer(object):
             dx = torch.mv(torch.inverse(hess), b)
             delta_t = exp_se3(dx)
             t_obj_cam = torch.mm(delta_t, t_obj_cam)
-
             # if e == 4:
             #     inliers_mask = torch.abs(res_sdf).squeeze() <= 0.05
             #     pts_surface = pts_surface[inliers_mask, :]

@@ -99,10 +99,12 @@ def get_batch_sdf_jacobian(sdf, x, out_dim=1):
     y = sdf.sdf(input_x)
     y = torch.unsqueeze(y,2)
     # (n, out_dim, out_dim)
-    w = torch.eye(out_dim).view(1, out_dim, out_dim).repeat(n, 1, 1).cuda()
+    # w = torch.eye(out_dim).view(1, out_dim, out_dim).repeat(n, 1, 1).cuda()
     # y.backward(w, retain_graph=False)
 
-    # return y.detach(), input_x.grad.data.detach()
+    # # Clear gradients and free up GPU memory
+    # sdf.zero_grad()
+    # input_x.grad = None
     return y.detach(), sdf.gradient(input_x)
 
 
