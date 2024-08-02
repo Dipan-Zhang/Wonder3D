@@ -15,6 +15,7 @@ from models.fields import FeatureField, SDFNetwork
 from reconstruct.optimizer import Optimizer
 from reconstruct.utils import color_table, set_view, get_configs
 import torchvision.transforms as transforms
+from scipy.spatial.transform import Rotation as R
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -57,45 +58,6 @@ def visualize_point_cloud(pcd):
     # Visualize the point cloud
     o3d.visualization.draw_geometries([pcd])
 
-    
-class BackprojectDepth(nn.Module):
-    """Layer to transform a depth image into a point cloud"""
-
-    def __init__(self, height, width):
-        super(BackprojectDepth, self).__init__()
-
-        # self.batch_size = batch_size
-        self.height = height
-        self.width = width
-
-        meshgrid = np.meshgrid(range(self.width), range(self.height), indexing="xy")
-        self.id_coords = np.stack(meshgrid, axis=0).astype(np.float32)
-        self.id_coords = nn.Parameter(
-            torch.from_numpy(self.id_coords), requires_grad=False
-        )
-        self.pix_coords = torch.unsqueeze(
-            torch.stack([self.id_coords[0].view(-1), self.id_coords[1].view(-1)], 0), 0
-        )
-
-    def forward(self, depth, K):
-        if isinstance(K, np.ndarray):
-            assert K.shape == (3, 3)
-            K = torch.from_numpy(K).float().to(depth.device)[None]
-
-        batch_size = depth.shape[0]
-        ones = torch.ones(batch_size, 1, self.height * self.width).to(depth.device)
-        inv_K = torch.inverse(K).to(depth.device)  # [B, 3, 3]
-
-        pix_coords = self.pix_coords.clone().to(depth.device)
-        pix_coords = pix_coords.repeat(batch_size, 1, 1)
-        pix_coords = torch.cat([pix_coords, ones], 1)  # [B, 3, H*W]
-
-        cam_points = torch.matmul(inv_K, pix_coords)  # [B, 3, 3] @ [B, 3, H*W]
-        cam_points = (
-            depth.view(batch_size, 1, -1) * cam_points
-        )  # [B, 1, H*W] * [B, 3, H*W]
-        return cam_points
-
 def backproject(depth, intrinsics, instance_mask, NOCS_convention=True):
     intrinsics_inv = np.linalg.inv(intrinsics)
     # image_shape = depth.shape
@@ -137,26 +99,23 @@ def read_dataset_single_img(dataset_path, frame_idx):
     depth_image_path = os.path.join(dataset_path, 'depth_init_calib/{:06d}.png'.format(frame_idx))
 
     # read image
-    rgb_img =  Image.open(rgb_image_path)
-    depth_img = Image.open(depth_image_path)
-    # depth_img = cv2.imread(depth_image_path).astype(np.uint16)
+    rgba_img = cv2.imread(rgb_image_path,-1)
+    rgb_img = rgba_img[...,:3]
+    depth_img = cv2.imread(depth_image_path,-1)/1000
 
     camera_config_path = os.path.join(dataset_path, 'camera_info.json')
     camera_config = get_configs(camera_config_path)
 
     camera_intrinsic = np.array(camera_config[str(frame_idx)]["cam_intrinsic"])
 
-    R_o2c = np.array(camera_config[str(frame_idx)]["cam_R_m2c"])
-    t_o2c = np.array(camera_config[str(frame_idx)]["cam_t_m2c"])
-    T_o2c = np.eye(4)
-    T_o2c[:3,:3] = R_o2c
-    T_o2c[:3,3] = t_o2c
-    # T_c2o
-    T_c2o = np.eye(4)
-    T_c2o[:3,:3] = R_o2c.T
-    T_c2o[:3,3] = -t_o2c.dot(R_o2c.T) 
+    R_co = np.array(camera_config[str(frame_idx)]["cam_R_m2c"])
+    t_co = np.array(camera_config[str(frame_idx)]["cam_t_m2c"])
+    T_co = np.eye(4)
+    T_co[:3,:3] = R_co
+    T_co[:3,3] = t_co
+    T_oc = np.linalg.inv(T_co)
 
-    return rgb_img, depth_img, T_o2c, T_c2o, camera_intrinsic
+    return rgb_img, depth_img, T_co, T_oc, camera_intrinsic
 
 def save_results(Trans_mat_list):
 
@@ -165,40 +124,60 @@ def save_results(Trans_mat_list):
         json.dump(Trans_mat_list, outfile,indent=1)
 
 def optimization_loop(optimizer,pts,T_init):
-   
-    return optimizer.estimate_pose_cam_obj(T_init,scale=1.0,pts=pts[:32768,:]) # temp fix
+    return optimizer.estimate_pose_cam_obj(T_init,scale=1.0,pts=pts) # temp fix
 
 if __name__ == "__main__":
     obj_name = 'owl'
     ckpt_path = './exp/neus/'+ obj_name +'/checkpoints/ckpt_005000.pth'
-    print(ckpt_path)
+    sdf_network = load_checkpoint(ckpt_path)
+    
     config_path = './confs/optimizer.json' # into args
     configs = get_configs(config_path)
 
-    sdf_network = load_checkpoint(ckpt_path)
-
     dataset_path = './data/pose_estimation/'
     frame_idx = 16
-    rgb_img, depth_img, T_o2c, T_c2o, camera_intrinsic = read_dataset_single_img(dataset_path,frame_idx)
+    rgb_img, depth_img, T_co, T_oc, camera_intrinsic = read_dataset_single_img(dataset_path,frame_idx)
 
-    transform = transforms.ToTensor()
-    depth_tensor = transform(depth_img)
-    back_prop = BackprojectDepth(height=depth_img.height,width=depth_img.width)
+    pts,_ = backproject(depth_img,camera_intrinsic, depth_img>0, NOCS_convention=False) # (16768, 3)
+    mesh_path = os.path.join(dataset_path, 'owl.ply')
+    mesh = o3d.io.read_triangle_mesh(mesh_path)
 
-    pts = back_prop(depth_tensor,camera_intrinsic) # (1, 3, 65536)
-    pts = torch.squeeze(pts.permute(0,2,1),dim=0) # (65536, 3)
-    pts = pts/1000
-    pts = pts.detach().numpy()
-   
     optimizer = Optimizer(sdf_network,configs)
 
-    
-    
-    T_optimized = {}
+    optimization_results = {}
+    # batch process??
     for id in range(2):
-        T_c2o_noised = T_c2o.copy()
-        T_c2o_noised[:3, 3] =  T_c2o_noised[:3, 3] + np.random.rand(3)*0.01 
-        T_c2o_optimized = optimization_loop(optimizer,pts,T_c2o_noised)
-        print(T_c2o_optimized)
-        T_optimized[id] = {'T_c2o_optimized': T_c2o_optimized.tolist()}
-    save_results(T_c2o_optimized)
+        T_co_noised = T_co.copy()
+        T_co_noised[:3, 3] =  T_co_noised[:3, 3] + np.random.rand(3)*0.2 # why here affects the memory usage
+        R_noised = R.from_euler('xyz', np.random.rand(3)*0.1, degrees=False)
+        T_co_noised[:3, :3] =  T_co_noised[:3, :3] @ R_noised.as_matrix()
+
+        T_co_optimized = optimization_loop(optimizer,pts,T_co_noised)
+        T_co_optimized = T_co_optimized.detach().numpy()
+        
+        # get the inverse of the transformation
+        T_oc_noised = np.linalg.inv(T_co_noised)
+        T_co_optimized = np.linalg.inv(T_co_optimized)
+
+        optimization_results[id] = {'T_oc_optimized': T_co_optimized.tolist(),
+                                   'T_oc_noised': T_oc_noised.tolist(),
+                                   'T_oc_gt': T_oc.tolist()
+                                    }
+        
+        pts_in_obj_gt = pts@ T_oc[:3,:3].T+ T_oc[:3,3]
+        pts_in_obj_noised = pts@ T_oc_noised[:3,:3].T + T_oc_noised[:3,3]
+        pts_in_obj_optimized = pts@ T_co_optimized[:3,:3].T + T_co_optimized[:3,3]
+        
+        pcd_gt = visualize_points(pts_in_obj_gt)
+        pcd_optimized = visualize_points(pts_in_obj_optimized)
+        pcd_noised = visualize_points(pts_in_obj_noised)
+
+        pcd_gt.colors = o3d.utility.Vector3dVector(np.ones_like(pts_in_obj_gt)*[1,0,0]) # gt in red
+        pcd_noised.colors = o3d.utility.Vector3dVector(np.ones_like(pts_in_obj_noised)*[0,1,0]) # in green  
+        o3d.visualization.draw_geometries([mesh,pcd_optimized])
+        # o3d.visualization.draw_geometries([pcd_gt,pcd_optimized,pcd_noised, mesh])
+
+    
+    save_results(optimization_results)
+
+    print("optimization done")

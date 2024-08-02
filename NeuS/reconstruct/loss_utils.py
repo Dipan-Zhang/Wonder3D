@@ -102,7 +102,6 @@ def get_batch_sdf_jacobian(sdf, x, out_dim=1):
     w = torch.eye(out_dim).view(1, out_dim, out_dim).repeat(n, 1, 1).cuda()
     # y.backward(w, retain_graph=False)
 
-    print(y.shape)
     # return y.detach(), input_x.grad.data.detach()
     return y.detach(), sdf.gradient(input_x)
 

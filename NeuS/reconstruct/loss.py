@@ -32,16 +32,14 @@ def compute_sdf_loss(sdf, pts_surface_cam, t_obj_cam):
         (pts_surface_cam[..., None, :] * t_obj_cam.cuda()[:3, :3]).sum(-1) + t_obj_cam.cuda()[:3, 3] #TODO fix it here
     pts_surface_obj = pts_surface_obj.to(torch.float)
 
-    res_sdf, de_di = get_batch_sdf_jacobian(sdf, pts_surface_obj, 1) # N, 1, 1
+    res_sdf, de_di = get_batch_sdf_jacobian(sdf, pts_surface_obj, 1) # N, 1, 1 # de_di gradient
     # SDF term Jacobian
     de_dxo = de_di[..., -3:]
     # Jacobian for pose
     dxo_dtoc = get_points_to_pose_jacobian_sim3(pts_surface_obj)
     jac_toc = torch.bmm(de_dxo, dxo_dtoc)
-    # Jacobian for code
-    jac_code = de_di[..., :-3]
 
-    return jac_toc, jac_code, res_sdf
+    return jac_toc, res_sdf
 
 
 def compute_render_loss(decoder, ray_directions, depth_obs, t_obj_cam, sampled_ray_depth, latent_vector, th=0.01):
