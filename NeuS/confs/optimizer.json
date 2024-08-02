@@ -1,0 +1,23 @@
+{
+  "optimizer": {
+    "code_len": 64,
+    "num_depth_samples": 50,
+    "cut_off_threshold": 0.01,
+    "joint_optim": {
+      "k1": 1.0,
+      "k2": 100.0,
+      "k3": 0.25,
+      "k4": 1e7,
+      "b1": 0.20,
+      "b2": 0.025,
+      "num_iterations": 10,
+      "learning_rate": 1.0,
+      "scale_damping": 1.0
+    },
+    "pose_only_optim": {
+      "num_iterations": 5,
+      "learning_rate": 1.0
+    }
+    
+  }
+}
