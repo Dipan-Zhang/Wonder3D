@@ -15,8 +15,9 @@
       "scale_damping": 1.0
     },
     "pose_only_optim": {
-      "num_iterations": 5,
-      "learning_rate": 1.0
+      "num_iterations": 20,
+      "learning_rate": 1.0,
+      "max_iteration": 80
     }
     
   }

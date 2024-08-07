@@ -139,7 +139,10 @@ if __name__ == "__main__":
     rgb_img, depth_img, T_co, T_oc, camera_intrinsic = read_dataset_single_img(dataset_path,frame_idx)
 
     pts,_ = backproject(depth_img,camera_intrinsic, depth_img>0, NOCS_convention=False) # (16768, 3)
-    pts_downsampled = pts[::3] # downsampled for faster optimization
+
+    # better downsample
+    selected_indices = np.random.choice(pts.shape[0], 1000, replace=False) 
+    pts = pts[selected_indices]
     mesh_path = os.path.join(dataset_path, 'owl.ply')
     mesh = o3d.io.read_triangle_mesh(mesh_path)
 
@@ -149,11 +152,11 @@ if __name__ == "__main__":
     # batch process??
     for id in range(2):
         T_co_noised = T_co.copy()
-        T_co_noised[:3, 3] =  T_co_noised[:3, 3] + np.random.rand(3)*0.4
-        R_noised = R.from_euler('xyz', np.random.rand(3)*0.1, degrees=False)
+        T_co_noised[:3, 3] =  T_co_noised[:3, 3] + np.random.rand(3)*0.3
+        R_noised = R.from_euler('xyz', np.random.rand(3)*1, degrees=False)
         T_co_noised[:3, :3] =  T_co_noised[:3, :3] @ R_noised.as_matrix()
 
-        T_co_optimized = optimization_loop(optimizer,pts,T_co_noised) # peak memory happens here
+        T_co_optimized = optimization_loop(optimizer,pts,T_co_noised)
         T_co_optimized = T_co_optimized.detach().numpy()
         
         # get the inverse of the transformation
@@ -173,10 +176,13 @@ if __name__ == "__main__":
         pcd_optimized = visualize_points(pts_in_obj_optimized)
         pcd_noised = visualize_points(pts_in_obj_noised)
 
-        pcd_gt.colors = o3d.utility.Vector3dVector(np.ones_like(pts_in_obj_gt)*[1,0,0]) # gt in red
-        pcd_noised.colors = o3d.utility.Vector3dVector(np.ones_like(pts_in_obj_noised)*[0,1,0]) # in green  
-        o3d.visualization.draw_geometries([mesh,pcd_optimized])
-        # o3d.visualization.draw_geometries([pcd_gt,pcd_optimized,pcd_noised, mesh])
+        pcd_gt.paint_uniform_color([0, 1, 0]) # in green
+        pcd_optimized.paint_uniform_color([0, 0, 1]) # in blue
+        pcd_noised.paint_uniform_color([1, 0, 0]) # in red
+
+        # o3d.visualization.draw_geometries([mesh,pcd_noised])
+        # o3d.visualization.draw_geometries([mesh,pcd_optimized])
+        o3d.visualization.draw([pcd_gt,pcd_optimized,pcd_noised, mesh])
         print(f'peak memory used after iteration {id} {torch.cuda.max_memory_allocated()*1e-9} GB')
     
     save_results(optimization_results)

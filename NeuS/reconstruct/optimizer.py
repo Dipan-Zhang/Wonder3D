@@ -42,6 +42,7 @@ class Optimizer(object):
         self.num_depth_samples = optim_cfg.num_depth_samples
         self.cut_off = optim_cfg.cut_off_threshold
         self.num_iterations_pose_only = optim_cfg.pose_only_optim.num_iterations
+        self.max_iteration = optim_cfg.pose_only_optim.max_iteration
 
 
     def estimate_pose_cam_obj(self, t_co_se3, scale, pts):
@@ -62,7 +63,7 @@ class Optimizer(object):
         # for e in range(self.num_iterations_pose_only):
         #     # 1. Compute SDF (3D) loss
         #     # breakpoint()
-        #     de_dsim3_sdf, de_dc_sdf, res_sdf = \
+        #     de_dsim3_sdf, res_sdf = \
         #         compute_sdf_loss(self.sdf, pts_surface,
         #                               t_obj_cam)
         #     _, sdf_loss, _ = get_robust_res(res_sdf, 0.05)
@@ -83,7 +84,7 @@ class Optimizer(object):
 
         sdf_loss = 1 
         iter = 0
-        while sdf_loss > 0.0002:
+        while sdf_loss > 0.0002 and iter < self.max_iteration:
             iter +=1
             # 1. Compute SDF (3D) loss
             # breakpoint()  
