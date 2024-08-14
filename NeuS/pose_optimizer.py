@@ -123,10 +123,7 @@ def save_results(Trans_mat_list):
     with open("./optimization_result.json", "w") as outfile: 
         json.dump(Trans_mat_list, outfile,indent=1)
 
-def optimization_loop(optimizer,pts,T_init):
-    return optimizer.estimate_pose_cam_obj(T_init,scale=1.0,pts=pts) # temp fix
-
-if __name__ == "__main__":
+def owl():
     obj_name = 'owl'
     ckpt_path = './exp/neus/'+ obj_name +'/checkpoints/ckpt_005000.pth'
     sdf_network = load_checkpoint(ckpt_path)
@@ -156,12 +153,12 @@ if __name__ == "__main__":
         R_noised = R.from_euler('xyz', np.random.rand(3)*1, degrees=False)
         T_co_noised[:3, :3] =  T_co_noised[:3, :3] @ R_noised.as_matrix()
 
-        T_co_optimized = optimization_loop(optimizer,pts,T_co_noised)
+        T_co_optimized = optimizer.estimate_pose_cam_obj(T_co_noised,scale=1.0,pts=pts) 
         T_co_optimized = T_co_optimized.detach().numpy()
         
         # get the inverse of the transformation
         T_oc_noised = np.linalg.inv(T_co_noised)
-        T_co_optimized = np.linalg.inv(T_co_optimized)
+        T_oc_optimized = np.linalg.inv(T_co_optimized)
 
         optimization_results[id] = {'T_oc_optimized': T_co_optimized.tolist(),
                                    'T_oc_noised': T_oc_noised.tolist(),
@@ -170,7 +167,7 @@ if __name__ == "__main__":
         
         pts_in_obj_gt = pts@ T_oc[:3,:3].T+ T_oc[:3,3]
         pts_in_obj_noised = pts@ T_oc_noised[:3,:3].T + T_oc_noised[:3,3]
-        pts_in_obj_optimized = pts@ T_co_optimized[:3,:3].T + T_co_optimized[:3,3]
+        pts_in_obj_optimized = pts@ T_oc_optimized[:3,:3].T + T_oc_optimized[:3,3]
         
         pcd_gt = visualize_points(pts_in_obj_gt)
         pcd_optimized = visualize_points(pts_in_obj_optimized)
@@ -183,6 +180,96 @@ if __name__ == "__main__":
         # o3d.visualization.draw_geometries([mesh,pcd_noised])
         # o3d.visualization.draw_geometries([mesh,pcd_optimized])
         o3d.visualization.draw([pcd_gt,pcd_optimized,pcd_noised, mesh])
+        print(f'peak memory used after iteration {id} {torch.cuda.max_memory_allocated()*1e-9} GB')
+    
+    save_results(optimization_results)
+
+    print("optimization done")
+
+
+if __name__ == "__main__":
+    obj_name = 'cup_hz'
+    ckpt_path = './exp/neus/'+ obj_name +'/checkpoints/ckpt_003000.pth'
+    sdf_network = load_checkpoint(ckpt_path)
+    mesh_path = '/home/stud/zanr/code/tmp/Wonder3D/NeuS/exp/neus/cup_hz/meshes/cup_hz_3000.glb'
+    mesh = o3d.io.read_triangle_mesh(mesh_path)
+    
+    config_path = './confs/optimizer.json' # into args
+    configs = get_configs(config_path)
+
+    # load dataset
+    dataset_path = '../customized_data/2023-12-05-17-44-48/'
+    rgb_image_path = os.path.join(dataset_path, 'object_rgba.png')
+    mask_image_path = os.path.join(dataset_path, 'object_pose/0_mask.png')
+    depth_image_path = os.path.join(dataset_path, 'depth/000001.png')
+    
+    # read image
+    rgba_image = cv2.imread(rgb_image_path, -1)
+    rgb_image = rgba_image[..., :3][...,[2,1,0]]
+    mask_image = cv2.imread(mask_image_path, -1)
+    depth_img = cv2.imread(depth_image_path, -1)/1000 
+
+    camera_intrinsic = np.array(
+            [
+                [608.7960205078125, 0, 632.1019287109375],
+                [0, 608.9515380859375, 365.985595703125],
+                [0, 0, 1],
+            ]
+        )
+    T_co_gt = np.loadtxt(os.path.join(dataset_path, 'object_pose/0_Rt_cam_obj.txt')).reshape(4, 4)
+    rot_x90 = np.array([[1, 0, 0, 0], [0, 0, -1, 0], [0, 1, 0, 0], [0, 0, 0, 1]])
+    T_co_gt = T_co_gt @ rot_x90.T
+
+    pts,_ = backproject(depth_img,camera_intrinsic, mask_image, NOCS_convention=False)
+
+    # better downsample
+    selected_indices = np.random.choice(pts.shape[0], 1000, replace=False) 
+    pts = pts[selected_indices]
+
+    optimizer = Optimizer(sdf_network,configs)
+    scale = 15.0
+    optimization_results = {}
+
+    
+    for id in range(2):
+        T_co_noised = T_co_gt.copy()
+        T_co_noised[:3, 3] =  T_co_noised[:3, 3] + np.random.rand(3)*0.3
+        R_noised = R.from_euler('xyz', np.random.rand(3)*0.3, degrees=False)
+        T_co_noised[:3, :3] =  T_co_noised[:3, :3] @ R_noised.as_matrix()
+
+        T_co_optimized = optimizer.estimate_pose_cam_obj(T_co_noised,scale=1/scale,pts=pts)  # scale should be inverse with T_co
+        T_co_optimized = T_co_optimized.detach().numpy()
+        
+        # get the inverse of the transformation
+        T_oc_gt = np.linalg.inv(T_co_gt)
+        T_oc_noised = np.linalg.inv(T_co_noised)
+        T_oc_optimized = np.linalg.inv(T_co_optimized)
+        print(repr(T_oc_optimized))
+
+        optimization_results[id] = {'T_oc_optimized': T_co_optimized.tolist(),
+                                   'T_oc_noised': T_oc_noised.tolist(),
+                                   'T_oc_gt': T_oc_gt.tolist()
+                                    }
+        
+        pts_in_obj_gt = pts@ T_oc_gt[:3,:3].T+ T_oc_gt[:3,3]
+        pts_in_obj_gt_scale = pts_in_obj_gt*scale
+        pts_in_obj_noised = pts@ T_oc_noised[:3,:3].T + T_oc_noised[:3,3]
+        pts_in_obj_noised_scale = pts_in_obj_noised*scale
+        pts_in_obj_optimized = pts@ T_oc_optimized[:3,:3].T + T_oc_optimized[:3,3]
+        pts_in_obj_optimized_scale = pts_in_obj_optimized*scale
+        
+        pcd_gt = visualize_points(pts_in_obj_gt_scale)
+        pcd_noised = visualize_points(pts_in_obj_noised_scale)
+        pcd_optimized = visualize_points(pts_in_obj_optimized_scale)
+
+        pcd_gt.paint_uniform_color([0, 1, 0]) # in green
+        pcd_optimized.paint_uniform_color([0, 0, 1]) # in blue
+        pcd_noised.paint_uniform_color([1, 0, 0]) # in red
+
+        # o3d.visualization.draw_geometries([mesh,pcd_noised])
+        # o3d.visualization.draw_geometries([mesh,pcd_optimized])
+        o3d.visualization.draw([pcd_gt,pcd_optimized,pcd_noised, mesh])
+
         print(f'peak memory used after iteration {id} {torch.cuda.max_memory_allocated()*1e-9} GB')
     
     save_results(optimization_results)

@@ -85,6 +85,7 @@ class Optimizer(object):
         sdf_loss = 1 
         iter = 0
         while sdf_loss > 0.0002 and iter < self.max_iteration:
+        # while iter < self.max_iteration:
             iter +=1
             # 1. Compute SDF (3D) loss
             # breakpoint()  
@@ -92,7 +93,8 @@ class Optimizer(object):
             de_dsim3_sdf, res_sdf = \
                 compute_sdf_loss(self.sdf, pts_surface,
                                       t_obj_cam)
-            
+            # breakpoint()
+            print("optimization: Iter %d, raw sdf loss: %f" % (iter, res_sdf.mean()))
             robust_res_sdf, sdf_loss, _ = get_robust_res(res_sdf, 0.05) # generate huber loss
             # breakpoint()
             j_sdf = de_dsim3_sdf[..., :6]
