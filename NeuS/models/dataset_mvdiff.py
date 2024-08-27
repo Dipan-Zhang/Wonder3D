@@ -236,7 +236,8 @@ class Dataset:
 
         self.normal_system = conf['normal_system']
         
-        self.cam_pose_dir = "./models/fixed_poses/"
+        # self.cam_pose_dir = "./models/fixed_poses/" 
+        self.cam_pose_dir = "../instant-nsr-pl/datasets/fixed_poses/" # using fixed poses from instant-nsr-pl fixing axis misalligned problem
 
         if self.num_views == 4:
             view_types = ['front', 'right', 'back', 'left']
@@ -268,6 +269,7 @@ class Dataset:
         self.H, self.W = self.images.shape[1], self.images.shape[2]
         self.image_pixels = self.H * self.W
 
+        # here set up the intrinsic matrix
         self.intrinsic = torch.from_numpy(np.array([
             [self.W/2.0,  0,          self.W / 2.0, 0],
             [0,           self.H/2.0, self.H/ 2.0,  0],
@@ -352,6 +354,7 @@ class Dataset:
         features = self.features[img_idx][((pixels_y, pixels_x))].to('cpu') # batch_size 1
         normal = self.normals_world[img_idx][(pixels_y, pixels_x)]      # batch_size, 3
         
+        # q the starting point of the ray at each ray
         q = torch.stack([(pixels_x / self.W-0.5)*2, (pixels_y / self.H-0.5)*2, torch.zeros_like(pixels_y)], dim=-1).float()  # batch_size, 3
         v = torch.stack([torch.zeros_like(pixels_y), torch.zeros_like(pixels_y), torch.ones_like(pixels_y)], dim=-1).float() # 001 z-axis
         
