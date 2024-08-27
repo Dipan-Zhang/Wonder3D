@@ -4,6 +4,7 @@ import open3d as o3d
 import os
 import cv2
 import json
+import argparse
 from pyhocon import ConfigFactory
 
 from models.fields import FeatureField, SDFNetwork
@@ -187,11 +188,18 @@ def owl():
     selected_indices = np.random.choice(pts.shape[0], 1000, replace=False) 
     pts = pts[selected_indices]
 
+    # estimate scale
+    bounding_box_mesh = mesh.get_axis_aligned_bounding_box()
+    diagonal_length_mesh = np.linalg.norm(bounding_box_mesh.get_max_bound() - bounding_box_mesh.get_min_bound())
+    diagonal_length_pts = np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))
+    scale = diagonal_length_mesh/diagonal_length_pts
+    print(f'Estimate initial scale {scale}')
+
     translation_guess = pts.mean(axis=0)
     T_co_init_list = sample_T_oc_init_list(10,translation_guess)
     T_co_init_ranked, _ = rank_T_init(sdf_network,pts,T_co_init_list)
 
-    return pts, mesh, sdf_network, T_co, T_co_init_ranked
+    return pts, mesh, sdf_network, T_co, T_co_init_ranked,scale
 
 
 def cup_hz():
@@ -230,11 +238,18 @@ def cup_hz():
     selected_indices = np.random.choice(pts.shape[0], 1000, replace=False) 
     pts = pts[selected_indices]
 
+    # estimate scale
+    bounding_box_mesh = mesh.get_axis_aligned_bounding_box()
+    diagonal_length_mesh = np.linalg.norm(bounding_box_mesh.get_max_bound() - bounding_box_mesh.get_min_bound())
+    diagonal_length_pts = np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))
+    scale = diagonal_length_mesh/diagonal_length_pts
+    print(f'Estimate initial scale {scale}')
+
     translation_guess = pts.mean(axis=0)
     T_co_init_list = sample_T_oc_init_list(10,translation_guess)
     T_co_init_ranked, _ = rank_T_init(sdf_network,pts,T_co_init_list)
     
-    return pts, mesh, sdf_network, T_co_gt, T_co_init_ranked
+    return pts, mesh, sdf_network, T_co_gt, T_co_init_ranked,scale
 
 
 def load_kinect_dataset(case_name,mask_id=0):
@@ -276,16 +291,24 @@ def load_kinect_dataset(case_name,mask_id=0):
     pcd = visualize_points(pts)
     pcd_remove_outlier, _ = pcd.remove_radius_outlier(10,0.2)
     pcd_remove_outlier, _ = pcd_remove_outlier.remove_statistical_outlier(nb_neighbors=40,std_ratio=2.0)
+    pts_removed = np.asarray(pcd_remove_outlier.points)
+
+    # estimate scale
+    bounding_box_mesh = mesh.get_axis_aligned_bounding_box()
+    diagonal_length_mesh = np.linalg.norm(bounding_box_mesh.get_max_bound() - bounding_box_mesh.get_min_bound())
+    diagonal_length_pts = np.linalg.norm(pts_removed.max(axis=0) - pts_removed.min(axis=0))
+    scale = diagonal_length_mesh/diagonal_length_pts
+    print(f'Estimate initial scale {scale}')
 
     print("this case does not have ground truth")
     T_co_gt = np.eye(4)
 
     # generate bunch of initial guess and rank them
-    translation_guess = pts.mean(axis=0)
-    T_co_init_list = sample_T_oc_init_list(10,translation_guess)
-    T_co_init_ranked, _ = rank_T_init(sdf_network,pts,T_co_init_list)
+    translation_guess = pts_removed.mean(axis=0)
+    T_co_init_list = sample_T_oc_init_list(20,translation_guess)
+    T_co_init_ranked, _ = rank_T_init(sdf_network,pts_removed,T_co_init_list)
 
-    return np.asarray(pcd_remove_outlier.points), mesh, sdf_network, T_co_gt,T_co_init_ranked
+    return pts_removed, mesh, sdf_network, T_co_gt,T_co_init_ranked,scale
 
 
 def prepare_optimization(case_name):
@@ -295,7 +318,7 @@ def prepare_optimization(case_name):
     elif case_name == 'cup_hz':
         # real dataset from hz
         return cup_hz()
-    elif case_name == 'object_rgba_8':
+    elif case_name[:11] == 'object_rgba': # check the prefix
         # real dataset from ar
         mask_id = case_name[-1]
         return load_kinect_dataset(case_name,mask_id)
@@ -304,19 +327,21 @@ def prepare_optimization(case_name):
     
 
 if __name__ == "__main__":
-    case_name = 'object_rgba_8'
-    pts, mesh, sdf_network, T_co_gt,T_co_init = prepare_optimization(case_name)
+    parser = argparse.ArgumentParser(
+                    prog='6DoF Optimizer',
+                    description='Optimize the pose of the object based on the sdf network',
+                    epilog='type object_name, for example: owl, cup_hz, object_rgba_1')
+    parser.add_argument('object_name', type=str, help='name of the object for optimization')   
+    args = parser.parse_args()
+
+    case_name = args.object_name
+    pts, mesh, sdf_network, T_co_gt,T_co_init,scale = prepare_optimization(case_name)
 
     config_path = './confs/optimizer.json' # into args
     configs = get_configs(config_path)
     optimizer = Optimizer(sdf_network,configs)
-    
-    # estimate scale
-    bounding_box_mesh = mesh.get_axis_aligned_bounding_box()
-    diagonal_length_mesh = np.linalg.norm(bounding_box_mesh.get_max_bound() - bounding_box_mesh.get_min_bound())
-    diagonal_length_pts = np.linalg.norm(pts.max(axis=0) - pts.min(axis=0))
-    scale = diagonal_length_mesh/diagonal_length_pts
-    print(f'Estimate initial scale {scale}')
+
+
 
     # feed the ranked initial guess to the optimizer
     T_co_optimized = optimizer.estimate_pose_cam_obj(T_co_init,scale=1/scale,pts=pts)  # scale should be inverse with T_co
@@ -346,7 +371,7 @@ if __name__ == "__main__":
     pcd_init.paint_uniform_color([1, 0, 0]) # in red
 
     # o3d.visualization.draw_geometries([mesh,pcd_init])
-    o3d.visualization.draw_geometries([mesh,pcd_optimized])
+    o3d.visualization.draw_geometries([mesh,pcd_init, pcd_optimized,axis])
     # o3d.visualization.draw([pcd_gt,pcd_optimized,pcd_init, mesh,axis])
 
     # o3d.visualization.capture_screen_image('./screen.jpg')

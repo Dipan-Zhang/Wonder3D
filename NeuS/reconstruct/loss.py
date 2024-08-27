@@ -28,7 +28,7 @@ def compute_sdf_loss(sdf, pts_surface_cam, t_obj_cam):
     """
     # (n_sample_surface, 3)
     pts_surface_obj = \
-        (pts_surface_cam[..., None, :] * t_obj_cam.cuda()[:3, :3]).sum(-1) + t_obj_cam.cuda()[:3, 3] #TODO fix it here
+        (pts_surface_cam[..., None, :] * t_obj_cam.cuda()[:3, :3]).sum(-1) + t_obj_cam.cuda()[:3, 3]
     pts_surface_obj = pts_surface_obj.to(torch.float)
 
     res_sdf, de_di = get_batch_sdf_jacobian(sdf, pts_surface_obj, 1) # N, 1, 1 # de_di gradient
