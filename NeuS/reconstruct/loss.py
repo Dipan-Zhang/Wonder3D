@@ -26,7 +26,7 @@ def compute_sdf_loss(sdf, pts_surface_cam, t_obj_cam):
     :param latent_vector: shape code
     :return: Jacobian wrt pose (N, 1, 7), Jacobian wrt shape code (N, 1, code_len), error residuals (N, 1, 1)
     """
-    # (n_sample_surface, 3)
+    # (n_sample_surface, 3), scaled
     pts_surface_obj = \
         (pts_surface_cam[..., None, :] * t_obj_cam.cuda()[:3, :3]).sum(-1) + t_obj_cam.cuda()[:3, 3]
     pts_surface_obj = pts_surface_obj.to(torch.float)

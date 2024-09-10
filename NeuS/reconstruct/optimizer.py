@@ -43,6 +43,7 @@ class Optimizer(object):
         self.cut_off = optim_cfg.cut_off_threshold
         self.num_iterations_pose_only = optim_cfg.pose_only_optim.num_iterations
         self.max_iteration = optim_cfg.pose_only_optim.max_iteration
+        self.num_iterations_scale = optim_cfg.pose_only_optim.num_iterations_scale
 
 
     def estimate_pose_cam_obj(self, t_co_se3, scale, pts):
@@ -57,39 +58,13 @@ class Optimizer(object):
         t_cam_obj[:3, :3] *= scale
         t_obj_cam = torch.inverse(t_cam_obj)
 
-        # latent_vector = torch.from_numpy(code).cuda() # SDF coming from code
         pts_surface = torch.from_numpy(pts).cuda()
-        
-        # for e in range(self.num_iterations_pose_only):
-        #     # 1. Compute SDF (3D) loss
-        #     # breakpoint()
-        #     de_dsim3_sdf, res_sdf = \
-        #         compute_sdf_loss(self.sdf, pts_surface,
-        #                               t_obj_cam)
-        #     _, sdf_loss, _ = get_robust_res(res_sdf, 0.05)
-
-        #     j_sdf = de_dsim3_sdf[..., :6]
-        #     hess = torch.bmm(j_sdf.transpose(-2, -1), j_sdf).sum(0).squeeze().cpu() / j_sdf.shape[0]
-        #     hess += 1e-2 * torch.eye(6)
-        #     b = -torch.bmm(j_sdf.transpose(-2, -1), res_sdf).sum(0).squeeze().cpu() / j_sdf.shape[0]
-        #     dx = torch.mv(torch.inverse(hess), b)
-        #     delta_t = exp_se3(dx)
-        #     t_obj_cam = torch.mm(delta_t, t_obj_cam)
-
-        #     if e == 4:
-        #         inliers_mask = torch.abs(res_sdf).squeeze() <= 0.05
-        #         pts_surface = pts_surface[inliers_mask, :]
-
-        #     print("Object pose-only optimization: Iter %d, sdf loss: %f" % (e, sdf_loss))
 
         sdf_loss = 1 
         iter = 0
         while sdf_loss > 0.0002 and iter < self.max_iteration:
-        # while iter < self.max_iteration:
             iter +=1
             # 1. Compute SDF (3D) loss
-            # breakpoint()  
-
             de_dsim3_sdf, res_sdf = \
                 compute_sdf_loss(self.sdf, pts_surface,
                                       t_obj_cam)
@@ -104,17 +79,32 @@ class Optimizer(object):
             dx = torch.mv(torch.inverse(hess), b)
             delta_t = exp_se3(dx)
             t_obj_cam = torch.mm(delta_t, t_obj_cam)
-            # if e == 4:
-            #     inliers_mask = torch.abs(res_sdf).squeeze() <= 0.05
-            #     pts_surface = pts_surface[inliers_mask, :]
-
             print("Object pose-only optimization: Iter %d, sdf loss: %f" % (iter, sdf_loss))
 
-        # Convert back to SE3
-        t_cam_obj = torch.inverse(t_obj_cam)
-        t_cam_obj[:3, :3] /= scale
+        # Optimize scale
+        # t_obj_cam_scale = t_obj_cam.clone()
+        # scale_opt = 1.0
+        # for e in range(self.num_iterations_scale):
+        #     # breakpoint()
+        #     # 1. Compute SDF loss again for the current transformation
+        #     _, res_sdf = compute_sdf_loss(self.sdf, pts_surface, t_obj_cam_scale)
+        #     _, sdf_loss, _ = get_robust_res(res_sdf, 0.05)
 
-        return t_cam_obj
+        #     # 2. Compute scale gradient (this is a simple approximation)
+        #     scale_grad = (res_sdf * pts_surface).sum() / pts_surface.numel()
+
+        #     # 3. Update scale
+        #     scale_opt -= 0.0001 * scale_grad.cpu()  # 0.0001 is the learning rate, adjust as necessary
+        #     t_obj_cam_scale[:3, :3] = t_obj_cam[:3, :3] * scale_opt
+        # print(f'opt results of scale is: {scale_opt}')
+
+        # # Convert back to SE3
+        # scale /= scale_opt
+
+        t_cam_obj = torch.inverse(t_obj_cam)
+        t_cam_obj[:3, :3] /= scale # back to SE3
+
+        return t_cam_obj, 1 / scale
 
     def reconstruct_object(self, t_cam_obj, pts, rays, depth, code=None):
         """

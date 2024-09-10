@@ -163,17 +163,19 @@ def sample_T_oc_init_list(n,translation):
     return T_list
 
 
-def rank_T_co_init(sdf_network,pts,T_co_init_list):
+def rank_T_co_init(sdf_network, pts, scale, T_co_init_list):
     """rank the sdf value of the points based on the rotation matrix"""
     sdf_list = []
     for T_co_init in T_co_init_list:
-        pts_in_obj = pts@ T_co_init[:3,:3].T + T_co_init[:3,3]
+        T_oc_init = np.linalg.inv(T_co_init)
+        pts_in_obj = pts @ T_oc_init[:3,:3].T + T_oc_init[:3,3]
+        pts_in_obj = pts_in_obj * scale 
         sdf = sdf_network.sdf(torch.tensor(pts_in_obj).to(device).float())
-        sdf_list.append(sdf.mean())
-    sdf_list = torch.stack(sdf_list)
-    min_idx =  torch.argmin(torch.abs(sdf_list))
+        sdf_list.append(torch.abs(sdf).mean())
 
-    return T_co_init_list[min_idx],min_idx
+    min_idx =  torch.argmin(torch.stack(sdf_list))
+
+    return T_co_init_list[min_idx], min_idx
 
 
 def visualize_pts_in_obj(pts, scale, T_co):
@@ -212,8 +214,7 @@ def owl():
     T_co_init_list = sample_T_oc_init_list(10,translation_guess)
     
     # scale points, feed into SDF   
-    pts_scaled = pts * scale  
-    T_co_init_ranked, _ = rank_T_co_init(sdf_network, pts_scaled, T_co_init_list)
+    T_co_init_ranked, _ = rank_T_co_init(sdf_network, pts, scale, T_co_init_list)
 
     return pts, mesh, sdf_network, T_co, T_co_init_ranked,scale
 
@@ -264,9 +265,8 @@ def cup_hz():
     translation_guess = pts.mean(axis=0)
     T_co_init_list = sample_T_oc_init_list(10,translation_guess)
 
-    # scale points, feed into SDF 
-    pts_scaled = pts * scale 
-    T_co_init_ranked, idx = rank_T_co_init(sdf_network, pts_scaled, T_co_init_list)
+    # rank the initial guess
+    T_co_init_ranked, idx = rank_T_co_init(sdf_network, pts, scale, T_co_init_list)
     print(f'ranked index is {idx}')
     
     return pts, mesh, sdf_network, T_co_gt, T_co_init_ranked,scale
@@ -354,13 +354,12 @@ def load_kinect_dataset(dataset_path, case_name, load_background=False):
     print("Kinetic Dataset does not have ground truth label")
 
     # generate bunch of initial guess and rank them
-    thickness_mesh = (bounding_box_mesh.get_max_bound() - bounding_box_mesh.get_min_bound())[2]/scale
-    translation_guess = pts_removed.mean(axis=0) - np.array([0, 0, -0.2*thickness_mesh]) # tiny offset according to mesh dimension
-    T_co_init_list = sample_T_oc_init_list(20, translation_guess)
+    thickness_mesh = (bounding_box_mesh.get_max_bound() - bounding_box_mesh.get_min_bound())[2] / scale
+    translation_guess = pts_removed.mean(axis=0) + np.array([0, 0, 0.1*thickness_mesh]) # tiny offset according to mesh dimension
+    T_co_init_list = sample_T_oc_init_list(10, translation_guess)
 
-    # scale points, feed into SDF
-    pts_scaled = pts_removed * scale
-    T_co_init_ranked, _ = rank_T_co_init(sdf_network, pts_scaled, T_co_init_list)
+    # rank the initial guess
+    T_co_init_ranked, idx  = rank_T_co_init(sdf_network, pts, scale, T_co_init_list)
 
     if load_background:
         return pts_removed, pcd_bg, mesh, sdf_network, T_co_gt, T_co_init_ranked, scale
@@ -388,7 +387,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     case_name = args.object_name
-    pts, mesh, sdf_network, T_co_gt,T_co_init,scale = prepare_optimization(case_name)
+    pts, mesh, sdf_network, T_co_gt, T_co_init, scale = prepare_optimization(case_name)
 
     # setup optimizer
     config_path = './confs/optimizer.json'
