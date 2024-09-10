@@ -123,22 +123,6 @@ def save_dict(save_path, dict):
     with open(save_path, "w") as outfile: 
         json.dump(dict, outfile,indent=1)
 
-def Rz_rand():
-    """create a random rotation matrix around z axis"""
-    theta = np.random.rand()*2*np.pi
-    R_z = np.array([[np.cos(theta), -np.sin(theta), 0],
-                    [np.sin(theta), np.cos(theta), 0],
-                    [0, 0, 1]])
-    return R_z
-
-def Ry_rand():
-    """create a random rotation matrix around y axis"""
-    theta = np.random.rand()*2*np.pi
-    R_y = np.array([[np.cos(theta), 0, np.sin(theta)],
-                    [0, 1, 0],
-                    [-np.sin(theta), 0, np.cos(theta)]])
-    return R_y
-
 
 def Rx_rand():
     """create a random rotation matrix around x axis"""
@@ -346,7 +330,7 @@ def load_kinect_dataset(dataset_path, case_name, load_background=False):
     points_dist_90 = np.percentile(points_dist, 90, axis=-1)
     pts_ = pts[points_dist < points_dist_90]
     
-
+    # downsampling
     selected_indices = np.random.choice(pts_.shape[0], 1000, replace=False) 
     pts = pts[selected_indices]
 
@@ -355,22 +339,19 @@ def load_kinect_dataset(dataset_path, case_name, load_background=False):
     pcd_remove_outlier, _ = pcd.remove_radius_outlier(10,0.2)
     pcd_remove_outlier, _ = pcd_remove_outlier.remove_statistical_outlier(nb_neighbors=40,std_ratio=2.0)
     pts_removed = np.asarray(pcd_remove_outlier.points)
-    # pts_removed = pts
 
     # estimate scale
-    bounding_box_mesh = mesh.get_axis_aligned_bounding_box()
-    diagonal_length_mesh = np.linalg.norm(bounding_box_mesh.get_max_bound() - bounding_box_mesh.get_min_bound())
-
-    pcd_obj = o3d.geometry.PointCloud() # creat bounding box for point cloud
+    pcd_obj = o3d.geometry.PointCloud()
     pcd_obj.points = o3d.utility.Vector3dVector(pts_removed)
     pcd_obj_bbox = pcd_obj.get_axis_aligned_bounding_box()
     diagonal_length_pts = np.linalg.norm(pcd_obj_bbox.get_max_bound() - pcd_obj_bbox.get_min_bound())
-
+    bounding_box_mesh = mesh.get_axis_aligned_bounding_box()
+    diagonal_length_mesh = np.linalg.norm(bounding_box_mesh.get_max_bound() - bounding_box_mesh.get_min_bound())
     scale = diagonal_length_mesh/diagonal_length_pts
     print(f'Estimate initial scale {scale}')
 
     T_co_gt = np.eye(4)
-    print("this case does not have ground truth label")
+    print("Kinetic Dataset does not have ground truth label")
 
     # generate bunch of initial guess and rank them
     thickness_mesh = (bounding_box_mesh.get_max_bound() - bounding_box_mesh.get_min_bound())[2]/scale
@@ -388,14 +369,11 @@ def load_kinect_dataset(dataset_path, case_name, load_background=False):
 
 
 def prepare_optimization(case_name):
-    if case_name == 'owl':
-        # rendered dataset
+    if case_name == 'owl': # rendered dataset
         return owl()
-    elif case_name == 'cup_hz':
-        # real dataset from hz
+    elif case_name == 'cup_hz': # real dataset from hz
         return cup_hz()
-    elif case_name[:5] == 'table'or case_name[:10] == 'cup_no_occ': # check the prefix
-        # real dataset from ar
+    elif case_name[:5] == 'table'or case_name[:10] == 'cup_no_occ': # kinetic dataset
         return load_kinect_dataset('../customized_data',case_name)
     else:
         raise NotImplementedError
@@ -453,7 +431,3 @@ if __name__ == "__main__":
     print(f'saved results to {optimization_path}')
 
     o3d.visualization.draw([pcd_init, pcd_optimized, mesh, axis]) # moved to the back, avoid blocking the saving when in headless mode
-    # o3d.visualization.draw_geometries([mesh,pcd_init])
-    # o3d.visualization.draw([pcd_gt,pcd_optimized,pcd_init, mesh,axis])
-    # o3d.visualization.capture_screen_image('./screen.jpg')
-    # o3d.visualization.draw([mesh_in_cam,mesh_in_cam_init,pcd])
