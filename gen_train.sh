@@ -37,6 +37,20 @@ do
     echo "Switching directory to NeuS/"
     cd NeuS/
 
+    DATASET_NAME="${CASE_NAME%_*}"  # Everything before the last underscore (e.g., table_1_far)
+    OBJ_NUMBER="${CASE_NAME##*_}" # The part after the last underscore (e.g., 1)
+
+    # Check if the directory exists
+    if [ ! -d "../instant-nsr-pl/datasets/fixed_poses_$DATASET_NAME" ]; then
+        echo "Directory '../instant-nsr-pl/datasets/fixed_poses_$DATASET_NAME' does not exist. Running surface normal detection"
+        
+        # Run test.py with $CASE_NAME as an argument (or modify as needed)
+        python estimation_surface_normal.py "$CASE_NAME"
+    else
+        echo "Using pre-computed fixed camera poses at '../instant-nsr-pl/datasets/fixed_poses_$DATASET_NAME'."
+    fi
+    
+
     # Run the second command
     python exp_runner.py --mode train --conf ./confs/wmask_ar.conf \
         --case "$CASE_NAME" --data_dir ../outputs/cropsize-192-cfg1.0/

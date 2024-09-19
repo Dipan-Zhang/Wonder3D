@@ -8,7 +8,6 @@ validation_dataset:
   num_validation_samples: 1000
   crop_size: 192
   filepaths: ['owl.png']  # the test image names. leave it empty, test all images in the folder
-  # filepaths: ['scene.jpg']  # the test image names. leave it empty, test all images in the folder
 save_dir: 'outputs/'
 
 pred_type: 'joint'

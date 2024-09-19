@@ -28,13 +28,15 @@ def apply_pca_colormap_return_proj(
         with torch.no_grad():
             U, S, V = torch.pca_lowrank(image_flat - mean, niter=niter)
         proj_V = V[:, :3]
-
+    
+    # project image to low dimensional surface
     low_rank = image_flat @ proj_V
+
+    # normalize the low_rank image based on 0.01 min and 0.99 max
     if low_rank_min is None:
         low_rank_min = torch.quantile(low_rank, 0.01, dim=0)
     if low_rank_max is None:
         low_rank_max = torch.quantile(low_rank, 0.99, dim=0)
-
     low_rank = (low_rank - low_rank_min) / (low_rank_max - low_rank_min)
     low_rank = torch.clamp(low_rank, 0, 1)
 

@@ -17,8 +17,8 @@
     "pose_only_optim": {
       "num_iterations": 20,
       "learning_rate": 1.0,
-      "max_iteration": 80
+      "max_iteration": 20,
+      "num_iterations_scale": 10
     }
-    
   }
 }

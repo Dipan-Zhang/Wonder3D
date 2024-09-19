@@ -374,8 +374,8 @@ class NeuSRenderer:
         background_alpha = None
         background_sampled_color = None
 
-        # Up sample
-        if self.n_importance > 0: #?? mean? meaning of torch.no_torch -> only used in inference??
+        # Up sample in important area
+        if self.n_importance > 0: 
             with torch.no_grad():
                 pts = rays_o[:, None, :] + rays_d[:, None, :] * z_vals[..., :, None] # map ray to real coordinate based on z values (distances)
                 sdf = self.sdf_network.sdf(pts.reshape(-1, 3)).reshape(batch_size, self.n_samples) # get sdf values, not forward!

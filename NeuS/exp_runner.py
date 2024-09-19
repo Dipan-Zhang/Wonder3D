@@ -65,7 +65,7 @@ class Runner:
             self.dataset,
             batch_size=self.conf['train']['batch_size'],
             shuffle=True,
-            num_workers=64,
+            num_workers=20, # 64 -> 20 according to warning message
         )
         self.iter_step = 1
         self.case_name = case
@@ -608,12 +608,12 @@ class Runner:
         if world_space:
             vertices = vertices * self.dataset.scale_mats_np[0][0, 0] + self.dataset.scale_mats_np[0][:3, 3][None]
 
+        # export as obj
         mesh = trimesh.Trimesh(vertices, triangles, vertex_colors=vertex_colors)
-        # export as glb
-        mesh.export(os.path.join(self.base_exp_dir, 'meshes', f'{self.case_name}_{self.iter_step}.glb'))
+        mesh.export(os.path.join(self.base_exp_dir, 'meshes', f'{self.case_name}_{self.iter_step}.obj'))
 
         mesh = trimesh.Trimesh(vertices, triangles, vertex_colors=feature_vertices_rgb_np)
-        mesh.export(os.path.join(self.base_exp_dir, 'meshes', f'{self.case_name}_feature_{self.iter_step}.glb'))
+        mesh.export(os.path.join(self.base_exp_dir, 'meshes', f'{self.case_name}_feature_{self.iter_step}.obj'))
         del mesh
         logging.info('End')
 

@@ -17,10 +17,10 @@ from scipy.spatial.transform import Rotation as R
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def load_checkpoint(checkpoint_fname):
-    conf_path = './confs/wmask.conf'
+    conf_path = './confs/wmask_ar.conf'
     f = open(conf_path)
     conf_text = f.read()
-    conf_text = conf_text.replace('CASE_NAME', 'owl') #TODO case name as input
+    conf_text = conf_text.replace('CASE_NAME', 'owl') 
     f.close()
     conf = ConfigFactory.parse_string(conf_text)
 
@@ -111,11 +111,11 @@ def read_dataset_single_img(dataset_path, frame_idx):
     return rgb_img, depth_img, T_co, T_oc, camera_intrinsic
 
 
-def split_underscore(case_name):
-    # split the case name into dataset name and mask id 
-    mask_id = case_name.split('_')[-1]
-    dataset_name = '_'.join(case_name.split('_')[:-1])
-    return dataset_name, mask_id
+def split_underscore(input_str):
+    # split the input string into the last part and the rest by underscore
+    end = input_str.split('_')[-1]
+    rest = '_'.join(input_str.split('_')[:-1])
+    return rest, end
 
 
 def save_dict(save_path, dict):
@@ -172,7 +172,7 @@ def rank_T_co_init(sdf_network, pts, scale, T_co_init_list):
         pts_in_obj = pts_in_obj * scale 
         sdf = sdf_network.sdf(torch.tensor(pts_in_obj).to(device).float())
         sdf_list.append(torch.abs(sdf).mean())
-
+        # sdf_list.append(sdf.mean())
     min_idx =  torch.argmin(torch.stack(sdf_list))
 
     return T_co_init_list[min_idx], min_idx
@@ -288,10 +288,14 @@ def load_kinect_dataset(dataset_path, case_name, load_background=False):
     """
     dataset_name,mask_id = split_underscore(case_name) # case_name = dataset_name + mask_id
 
-    ckpt_path = './exp/neus/'+ case_name +'/checkpoints/ckpt_003000.pth'
-    sdf_network = load_checkpoint(ckpt_path)
+    # ckpt_path = './exp/neus/'+ case_name +'/checkpoints/ckpt_003000.pth' 
+    # mesh_path = f'./exp/neus/{case_name}/meshes/{case_name}_3000.obj'
 
-    mesh_path = f'./exp/neus/{case_name}/meshes/{case_name}_3000.obj'
+    # hot fix
+    ckpt_path = './exp/neus/fixed_pose_test_final/'+ case_name +'/checkpoints/ckpt_001500.pth' 
+    mesh_path = f'./exp/neus/fixed_pose_test_final/{case_name}/meshes/{case_name}_1500.obj'
+
+    sdf_network = load_checkpoint(ckpt_path)
     mesh = o3d.io.read_triangle_mesh(mesh_path)
 
     # setup paths
@@ -360,6 +364,11 @@ def load_kinect_dataset(dataset_path, case_name, load_background=False):
 
     # rank the initial guess
     T_co_init_ranked, idx  = rank_T_co_init(sdf_network, pts, scale, T_co_init_list)
+
+    # print("the ranked index is ", idx)  
+    # for T_co_init in T_co_init_list:
+    #     pcd = visualize_pts_in_obj(pts, scale, T_co_init)
+    #     o3d.visualization.draw_geometries([pcd, mesh])
 
     if load_background:
         return pts_removed, pcd_bg, mesh, sdf_network, T_co_gt, T_co_init_ranked, scale
