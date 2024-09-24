@@ -392,16 +392,22 @@ if __name__ == "__main__":
                     prog='6DoF Optimizer',
                     description='Optimize the pose of the object based on the sdf network',
                     epilog='type object_name, for example: owl, cup_hz, object_rgba_1')
-    parser.add_argument('object_name', type=str, help='name of the object for optimization')   
+    parser.add_argument('--object_name', type=str, help='name of the object for optimization')  
+    parser.add_argument('--config_path', type=str, default='./confs/optimizer.json', help='path to the optimizer config file') 
+    parser.add_argument('--Debug', action='store_true', help='bool, whether to show the visualization')
     args = parser.parse_args()
 
     case_name = args.object_name
     pts, mesh, sdf_network, T_co_gt, T_co_init, scale = prepare_optimization(case_name)
 
     # setup optimizer
-    config_path = './confs/optimizer.json'
+    config_path = args.config_path
     configs = get_configs(config_path)
     optimizer = Optimizer(sdf_network,configs)
+
+    DEBUG = False
+    if args.Debug:
+        DEBUG=True
 
     # feed the ranked initial guess to the optimizer
     T_co_optimized, scale_optimized = optimizer.estimate_pose_cam_obj(T_co_init,scale=1/scale,pts=pts)  # scale should be inverse with T_co
@@ -412,16 +418,18 @@ if __name__ == "__main__":
     T_oc_init = np.linalg.inv(T_co_init)
     T_oc_optimized = np.linalg.inv(T_co_optimized)
 
-    # transfer to obj frame  
-    pcd_gt = visualize_pts_in_obj(pts, scale, T_co_gt)
-    pcd_init = visualize_pts_in_obj(pts, scale, T_co_init)
-    pcd_optimized = visualize_pts_in_obj(pts, scale, T_co_optimized)
 
-    axis = o3d.geometry.TriangleMesh.create_coordinate_frame(1)
+    if DEBUG:
+        # transfer to obj frame and prepare visualization
+        pcd_gt = visualize_pts_in_obj(pts, scale, T_co_gt)
+        pcd_init = visualize_pts_in_obj(pts, scale, T_co_init)
+        pcd_optimized = visualize_pts_in_obj(pts, scale, T_co_optimized)
 
-    pcd_gt.paint_uniform_color([0, 1, 0]) # gt in green
-    pcd_optimized.paint_uniform_color([0, 0, 1]) # optmized pose in blue
-    pcd_init.paint_uniform_color([1, 0, 0]) # init pose in red
+        axis = o3d.geometry.TriangleMesh.create_coordinate_frame(1)
+
+        pcd_gt.paint_uniform_color([0, 1, 0]) # gt in green
+        pcd_optimized.paint_uniform_color([0, 0, 1]) # optmized pose in blue
+        pcd_init.paint_uniform_color([1, 0, 0]) # init pose in red
     
     # record the results
     optimization_results = {
@@ -431,11 +439,12 @@ if __name__ == "__main__":
                             'scale': scale
                             }
 
-    print(f"optimization done, peak memory used: {torch.cuda.max_memory_allocated()*1e-9} GB")
 
     os.makedirs('./exp/optimization_results',exist_ok=True)
     optimization_path = f'./exp/optimization_results/{case_name}.json'
     save_dict(optimization_path,optimization_results)
     print(f'saved results to {optimization_path}')
 
-    o3d.visualization.draw([pcd_init, pcd_optimized, mesh, axis]) # moved to the back, avoid blocking the saving when in headless mode
+    if DEBUG:
+        print(f"optimization done, peak memory used: {torch.cuda.max_memory_allocated()*1e-9} GB")
+        o3d.visualization.draw([pcd_init, pcd_optimized, mesh, axis]) # visualize results when in debug mode
