@@ -69,7 +69,7 @@ Our overarching mission is to enhance the speed, affordability, and quality of 3
 
 #### Linux System Setup.
 ```angular2html
-conda create -n wonder3d
+conda create -n wonder3d python=3.8
 conda activate wonder3d
 pip install -r requirements.txt
 pip install git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
