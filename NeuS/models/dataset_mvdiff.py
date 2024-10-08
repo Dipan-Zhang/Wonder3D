@@ -11,7 +11,8 @@ import PIL.Image
 from glob import glob
 import pdb
 import matplotlib.pyplot as plt
-from PIL import Image
+import logging
+from typing import List
 
 from models.features.clip_extract import CLIPArgs, extract_clip_features
 from models.features.dino_extract import DINOArgs, extract_dino_features
@@ -72,7 +73,7 @@ def normal_opengl2opencv(normal):
     R_bcam2cv = np.array([1, -1, -1], np.float32)
     normal_cv = normal * R_bcam2cv[None, None, :]
 
-    print(np.shape(normal_cv))
+    # print(np.shape(normal_cv))
 
     return normal_cv
 
@@ -82,8 +83,14 @@ def inv_RT(RT):
 
     return RT_inv[:3, :]
 
-def load_a_prediction(root_dir, test_object, imSize, view_types, load_color=False, cam_pose_dir=None, normal_system='front'):
+def split_underscore(input_str):
+    # split the input string into the last part and the rest by underscore
+    end = input_str.split('_')[-1]
+    rest = '_'.join(input_str.split('_')[:-1])
+    return rest, end
 
+
+def load_a_prediction(root_dir, test_object, imSize, view_types, load_color=False, cam_pose_dir=None, normal_system='front'):
     all_images = []
     all_normals = []
     all_normals_world = []
@@ -93,7 +100,8 @@ def load_a_prediction(root_dir, test_object, imSize, view_types, load_color=Fals
     print(f'camera pose directory {cam_pose_dir}')
     RT_front = np.loadtxt(glob(os.path.join(cam_pose_dir, '*_%s_RT.txt'%( 'front')))[0])   # world2cam matrix
     RT_front_cv = RT_opengl2opencv(RT_front)   # convert normal from opengl to opencv
-
+    logging.getLogger('PIL').setLevel(logging.WARNING) # get rid of annoying logs
+    
     for idx, view in enumerate(view_types):
         # originally use masked normal and unmasked rgb
         normal_filepath = os.path.join(root_dir,test_object, 'masked_normals','normals_000_%s.png'%(view)) # here use unmasked
@@ -107,7 +115,7 @@ def load_a_prediction(root_dir, test_object, imSize, view_types, load_color=Fals
         mask = normal[:, :, 3] # why mask is relevant with normal???
         normal = normal[:, :, :3]
 
-        RT = np.loadtxt(os.path.join(cam_pose_dir, '000_%s_RT.txt'%(view)))  # world2cam matrix
+        RT = np.loadtxt(os.path.join(cam_pose_dir, '000_%s_RT.txt'%(view)))  # world2cam matrix T_cw
 
         normal = img2normal(normal)
 
@@ -118,7 +126,7 @@ def load_a_prediction(root_dir, test_object, imSize, view_types, load_color=Fals
         
         all_masks.append(mask)
         RT_cv = RT_opengl2opencv(RT)   # convert normal from opengl to opencv
-        all_poses.append(inv_RT(RT_cv))   # cam2world
+        all_poses.append(inv_RT(RT_cv))   # cam2world T_wc
         all_w2cs.append(RT_cv)
 
         # whether to 
@@ -136,14 +144,20 @@ def load_a_prediction(root_dir, test_object, imSize, view_types, load_color=Fals
 
     return np.stack(all_images), np.stack(all_masks), np.stack(all_normals), np.stack(all_normals_world), np.stack(all_poses), np.stack(all_w2cs)
 
-def expand_features(features,img_size):
-    features = features.permute(0, 3, 1, 2)  # New shape will be [6, 384, 55, 55]
+def expand_features(features, img_size: List[int]):
+    #TODO make normalization more visible
+    features /= torch.norm(features, dim=-1, keepdim=True)  # Normalize the features along the channel dimension
+    print(f'feature normalized!')
+    
+    # def show_distribution(features, desc: str = None):
+    #     print(f'Distribution of {desc}: max: {features.max()}, min: {features.min()}, \n mean: {features.mean()}, std: {features.std()}\n')
+    # for ii in range(features.shape[0]):
+    #     # features[ii] = F.interpolate(features[ii][None], size=(img_size[0], img_size[1]), mode='bilinear', align_corners=False)[0]
+    #     show_distribution(features[ii], 'feature after normalization')
 
-    # Here, mode='bilinear' is used for 2D interpolation; you can also use other modes like 'nearest', 'bicubic', etc.
+    features = features.permute(0, 3, 1, 2)  # n h w c -> n c h w
     expanded_features = F.interpolate(features, size=(img_size[0], img_size[1]), mode='bilinear', align_corners=False)
-
-    # Step 3: Permute back to [batch_size, height, width, channels]
-    expanded_features = expanded_features.permute(0, 2, 3, 1) 
+    expanded_features = expanded_features.permute(0, 2, 3, 1) # n c w h -> n h w c
 
     return expanded_features
 
@@ -170,11 +184,19 @@ def extract_features(root_dir, test_object,feat_type, view_types, normal_system=
     cache_path = cache_dir + f"/{test_object}_features.pt"
 
     enable_cache= True
-    if enable_cache and os.path.exists(cache_path):
+    # Check if cache is existing
+    if os.path.exists(cache_path):
         cache_dict = torch.load(cache_path)
-        if cache_dict.get("image_fnames") != image_fnames:
+        if cache_dict.get("image_fnames") != image_fnames: # if not valid, re-extract features
             print("Image filenames have changed, cache invalidated... Reextract features from images")
             features = extract_fn(image_fnames, device='cuda')
+            
+            if enable_cache: # save to cache
+                cache_dict = {"image_fnames": image_fnames, "features": features}
+                os.makedirs(cache_dir,exist_ok=True)
+                torch.save(cache_dict, cache_path)
+                print(f"Saved {feat_type} features to cache at {cache_path}")
+
             return features
         else:
             print(f'load cached feature from {cache_path}')
@@ -183,7 +205,7 @@ def extract_features(root_dir, test_object,feat_type, view_types, normal_system=
         # Cache is invalid or doesn't exist, so extract features
         print(f"Extracting {feat_type} features for {len(image_fnames)} images...")
         features = extract_fn(image_fnames, device='cuda')
-        
+
         if visualize == True:
             feature_pca = []
             for feature in features:
@@ -193,7 +215,7 @@ def extract_features(root_dir, test_object,feat_type, view_types, normal_system=
 
             for i, (image_path, dino_pca_) in enumerate(zip(image_fnames, feature_pca)):
                 plt.subplot(2, len(image_fnames), i + 1)
-                plt.imshow(Image.open(image_path))
+                plt.imshow(PIL.Image.open(image_path))
                 plt.title(os.path.basename(image_path))
                 plt.axis("off")
 
@@ -227,6 +249,7 @@ class Dataset:
 
         self.data_dir = conf.get_string('data_dir')
         self.object_name = conf.get_string('object_name')
+        self.scene_name, _ = split_underscore(self.object_name)
         self.object_viewidx = conf.get_int('object_viewidx')
         self.imSize = conf['imSize']
         self.load_color = conf['load_color']
@@ -236,9 +259,17 @@ class Dataset:
 
         self.normal_system = conf['normal_system']
         
-        # self.cam_pose_dir = "./models/fixed_poses/" 
-        self.cam_pose_dir = "../instant-nsr-pl/datasets/fixed_poses/" # using fixed poses from instant-nsr-pl fixing axis misalligned problem
-
+        self.cam_pose_dir = "../instant-nsr-pl/datasets/fixed_poses/" # fixed poses from instant-nsr-pl fixing axis misalligned problem
+        # fixed_poses_dir = ../instant-nsr-pl/datasets/fixed_poses/ # default fixed poses
+        # fixed_poses_dir = ../instant-nsr-pl/datasets/fixed_poses_test/ #  all poses rotate -42 not working, most likely wrong due to didn't pay attention of opencv and opengl transformation 
+        # fixed_poses_dir = ../instant-nsr-pl/datasets/fixed_poses_test2/ # try with hz axis, rotate each axis
+        # fixed_poses_dir = ../instant-nsr-pl/datasets/fixed_poses_test4/ # try hz way of rotating all poses, z rottated 180 
+        # fixed_poses_dir = ../instant-nsr-pl/datasets/fixed_poses_test5/ # use rotation from HZ list test
+        # fixed_poses_dir = ../instant-nsr-pl/datasets/fixed_poses_test6/ # # use total rotation for table_top scene
+        # fixed_poses_dir = ../instant-nsr-pl/datasets/fixed_poses_test7/ # # use total rotation for table_1_far scene
+        # fixed_poses_dir = ../instant-nsr-pl/datasets/fixed_poses_test8/ # # use total rotation for table_2_far scene
+        # self.cam_pose_dir = f"../instant-nsr-pl/datasets/fixed_poses_{self.scene_name}/"
+        
         if self.num_views == 4:
             view_types = ['front', 'right', 'back', 'left']
         elif self.num_views == 5:
@@ -360,7 +391,7 @@ class Dataset:
         
         rays_v = v / torch.linalg.norm(v, ord=2, dim=-1, keepdim=True)    # batch_size, 3
         rays_v = torch.matmul(self.pose_all[img_idx, None, :3, :3], rays_v[:, :, None]).squeeze()  # batch_size, 3
-        
+        # print(f'shape during preparing rays: poses shape {self.pose_all[img_idx, None, :3, :3].shape}, rays_v shape {rays_v[:, :, None].shape}')
         rays_o = torch.matmul(self.pose_all[img_idx, None, :3, :3], q[:, :, None]).squeeze()  # batch_size, 3
         rays_o = self.pose_all[img_idx, None, :3, 3].expand(rays_v.shape) + rays_o # batch_size, 3
 
