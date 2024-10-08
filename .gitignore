@@ -184,6 +184,7 @@ outputs/*
 
 NeuS/exp/*
 NeuS/test_scenes/*
+NeuS/data/
 NeuS/mesh2tex/*
 neus_configs
 vast/*
@@ -192,3 +193,13 @@ experiments/*
 ckpts/*
 neus/*
 instant-nsr-pl/exp/*
+
+example_images/
+customized_data/
+instant-nsr-pl/datasets/fixed_poses*
+
+
+# temporal
+NeuS/exp/
+command.md
+NeuS/outputs/*

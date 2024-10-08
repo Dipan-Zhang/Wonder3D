@@ -1,6 +1,9 @@
 import os
 from omegaconf import OmegaConf
 from packaging import version
+import imageio
+import cv2
+import json
 
 
 # ============ Register OmegaConf Recolvers ============= #
@@ -52,3 +55,10 @@ def get_rank():
 
 def parse_version(ver):
     return version.parse(ver)
+
+
+def show_img(title, img_rgb):  # img - rgb image
+    img_bgr = rgb2bgr(img_rgb)
+    cv2.imshow(title, img_bgr)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
