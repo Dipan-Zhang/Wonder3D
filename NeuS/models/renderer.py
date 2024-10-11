@@ -503,7 +503,7 @@ class NeuSRenderer:
 
 
 
-class MeanRenderer(nn.Module):
+class FeatureRender(nn.Module):
     """Calculate average of embeddings along ray."""
 
     @classmethod

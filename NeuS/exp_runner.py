@@ -14,7 +14,7 @@ from tqdm import tqdm
 from pyhocon import ConfigFactory
 from models.dataset_mvdiff import Dataset
 from models.fields import RenderingNetwork, SDFNetwork, SingleVarianceNetwork, NeRF, FeatureNetwork, FeatureField
-from models.renderer import NeuSRenderer, MeanRenderer, select_vertices_and_update_triangles
+from models.renderer import NeuSRenderer, FeatureRender, select_vertices_and_update_triangles
 from models.features.pca_colormap import apply_pca_colormap
 import pdb
 import math
@@ -108,7 +108,7 @@ class Runner:
         self.color_network = RenderingNetwork(**self.conf['model.rendering_network']).to(self.device)
         # self.feature_network = FeatureNetwork(**self.conf['model.feature_network']).to(self.device)
         self.feature_network = FeatureField(**self.conf['model.feature_field']).to(self.device)
-        self.feature_render = MeanRenderer()
+        self.feature_render = FeatureRender()
         # params_to_train += list(self.nerf_outside.parameters())
         params_to_train_slow += list(self.sdf_network.parameters()) #????
         params_to_train_slow += list(self.deviation_network.parameters())
