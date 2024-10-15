@@ -13,7 +13,7 @@ from icecream import ic
 from tqdm import tqdm
 from pyhocon import ConfigFactory
 from models.dataset_mvdiff import Dataset
-from models.fields import RenderingNetwork, SDFNetwork, SingleVarianceNetwork, NeRF, FeatureNetwork, FeatureField
+from models.fields import RenderingNetwork, SDFNetwork, SingleVarianceNetwork, NeRF, FeatureField
 from models.renderer import NeuSRenderer, FeatureRender, select_vertices_and_update_triangles
 from models.features.pca_colormap import apply_pca_colormap
 import pdb
@@ -79,6 +79,7 @@ class Runner:
         self.batch_size = self.conf.get_int('train.batch_size')
         self.validate_resolution_level = self.conf.get_int('train.validate_resolution_level')
         self.learning_rate = self.conf.get_float('train.learning_rate')
+        self.learning_rate_feature = self.conf.get_float('train.learning_rate_feature')
         self.learning_rate_alpha = self.conf.get_float('train.learning_rate_alpha')
         self.use_white_bkgd = self.conf.get_bool('train.use_white_bkgd')
         self.warm_up_end = self.conf.get_float('train.warm_up_end', default=0.0)
@@ -101,27 +102,22 @@ class Runner:
         self.writer = None
 
         # Networks
-        params_to_train_slow = []
         self.nerf_outside = NeRF(**self.conf['model.nerf']).to(self.device)
         self.sdf_network = SDFNetwork(**self.conf['model.sdf_network']).to(self.device)
         self.deviation_network = SingleVarianceNetwork(**self.conf['model.variance_network']).to(self.device)
         self.color_network = RenderingNetwork(**self.conf['model.rendering_network']).to(self.device)
-        # self.feature_network = FeatureNetwork(**self.conf['model.feature_network']).to(self.device)
-        self.feature_network = FeatureField(**self.conf['model.feature_field']).to(self.device)
+        # self.feature_network = FeatureNetwork(**self.conf['model.feature_network']).to(self.device) # feature network from LERF
+        self.feature_network = FeatureField(**self.conf['model.feature_field']).to(self.device) # feature network borrowed from F3RM
         self.feature_render = FeatureRender()
-        # params_to_train += list(self.nerf_outside.parameters())
-        params_to_train_slow += list(self.sdf_network.parameters()) #????
+        params_to_train_slow = []
+        # params_to_train_slow += list(self.nerf_outside.parameters())#? why this line got commented?
+        params_to_train_slow += list(self.sdf_network.parameters())
         params_to_train_slow += list(self.deviation_network.parameters())
-        # params_to_train += list(self.color_network.parameters())
-
-        # optimzier: separate different parameter groups
-        self.optimizer_geometry = torch.optim.Adam(
-            [{'params': params_to_train_slow}, {'params': self.color_network.parameters(), 'lr': self.learning_rate * 2}]
+ 
+        # Set up optimizer: will be updated when sequential training!
+        self.optimizer = torch.optim.Adam(
+            [{'params': params_to_train_slow, 'lr': self.learning_rate}, {'params': self.color_network.parameters(), 'lr': self.learning_rate * 2}]
         )
-        self.optimizer_feature = torch.optim.Adam(
-            [{'params':self.feature_network.parameters()}], lr=self.learning_rate
-        )
-
         self.renderer = NeuSRenderer(
             self.nerf_outside, self.sdf_network, self.deviation_network, self.color_network, self.feature_network, self.feature_render,**self.conf['model.neus_renderer']
         )
@@ -149,8 +145,13 @@ class Runner:
             self.file_backup()
 
     def train(self):
-        self.writer = wandb.init(project = "NeuS with Feature Extraction",
-                                 mode=self.wandb_mode
+        self.writer = wandb.init(project = self.conf.get_string('train.wandb_project_name'),
+                                 mode=self.wandb_mode,
+                                 config = {
+                                    "learning_rate": self.learning_rate,
+                                    "learning_rate_feature": self.learning_rate_feature,
+                                    "feature_weight": self.feature_weight,
+                                 }
                                 )
         
         self.update_learning_rate()
@@ -158,15 +159,12 @@ class Runner:
         image_perm = self.get_image_perm()
 
         num_train_epochs = math.ceil(res_step / len(self.dataloader))
-        # num_train_epochs_geo = 7 # 12 for together, 7 for seq 
 
         if not self.load_ckpt:
             for epoch in range(num_train_epochs):
                 # for iter_i in tqdm(range(res_step)):
                 print("epoch ", epoch)
                 for iter_i, data in enumerate(self.dataloader):
-                    # img_idx = image_perm[self.iter_step % len(image_perm)]
-                    # data = self.dataset.gen_random_rays_at(img_idx, self.batch_size)
                     data = data.cuda()
 
                     rays_o, rays_d, true_rgb, mask, true_normal, cosines, feature_gt = (
@@ -178,7 +176,6 @@ class Runner:
                         data[:, 13:14],
                         data[:, 14:],
                     )
-                    # near, far = self.dataset.near_far_from_sphere(rays_o, rays_d)
                     near, far = self.dataset.get_near_far()
 
                     background_rgb = None
@@ -214,14 +211,6 @@ class Runner:
                     mask_errors = F.binary_cross_entropy(weight_sum.clip(1e-3, 1.0 - 1e-3), mask, reduction='none')
                     mask_loss = ranking_loss(mask_errors[:, 0], penalize_ratio=0.8)
 
-                    # set feature loss 0 when only train geometry 
-                    if self.sequential_train and self.iter_step < self.geo_only_iter:
-                        feature_loss = 0 # if sequential traing: here don't take feature loss into account
-                    else: 
-                        feature_errors = F.mse_loss(feature,feature_gt,reduction="none") # feature gt: bs x chanel, 512 x 384,
-                        feature_errors = feature_errors*mask
-                        feature_loss = feature_errors.sum(dim=-1).nanmean()
-
                     def feasible(key):
                         return (key in render_out) and (render_out[key] is not None)
 
@@ -233,14 +222,26 @@ class Runner:
                     normals = normals.sum(dim=1)
 
                     normal_errors = 1 - F.cosine_similarity(normals, true_normal, dim=1)
-                    # normal_error = normal_error * mask[:, 0]
-                    # normal_loss = F.l1_loss(normal_error, torch.zeros_like(normal_error), reduction='sum') / mask_sum
                     normal_errors = normal_errors * torch.exp(cosines.abs()[:, 0]) / torch.exp(cosines.abs()).sum()
                     normal_loss = ranking_loss(normal_errors[mask[:, 0] > 0], penalize_ratio=0.9, type='sum')
 
                     sparse_loss = render_out['sparse_loss']
 
-          
+                    # calculate feature loss
+                    feature_loss = F.mse_loss(feature, feature_gt) # feature gt: bs x chanel, 512 x 384,
+                    
+                    # feature_errors = F.mse_loss(feature, feature_gt,reduction='none').sum(dim=1) # feature gt: bs x chanel, 512 x 384,
+                    # feature_loss = ranking_loss(feature_errors[mask[:, 0] > 0])
+
+                    #TODO make this part compatible with train together
+                    if self.iter_step == self.geo_only_iter: # switch to feature training
+                        for param_group in self.optimizer.param_groups[:2]:  # Freezing the first two groups
+                            for param in param_group['params']:
+                                param.requires_grad = False
+                        self.optimizer = torch.optim.Adam(
+                            [{'params': self.feature_network.parameters(), 'lr': self.learning_rate_feature}]
+                        )
+
                     loss = (
                         color_fine_loss * self.color_weight
                         + eikonal_loss * self.igr_weight
@@ -249,7 +250,9 @@ class Runner:
                         + normal_loss * self.normal_weight
                         + feature_loss * self.feature_weight
                     )
-                    metrics = {'iterstep': self.iter_step,
+
+                    metrics = {
+                            'iterstep': self.iter_step,
                             'Loss/loss': loss,
                             'Loss/color_loss': color_fine_loss,
                             'Loss/normal_loss': normal_loss,
@@ -259,19 +262,23 @@ class Runner:
                             'Statistics/s_val': s_val.mean(), 
                             'Statistics/cdf': (cdf_fine[:, :1] * mask).sum() / mask_sum,
                             'Statistics/weight_max': (weight_max * mask).sum() / mask_sum,
-                            'Statistics/psnr': psnr
+                            'Statistics/psnr': psnr,
+                            'Statistics/feature_range': feature.max() - feature.min(),  # Debug
                     }
-
-                    self.optimizer_geometry.zero_grad()
-                    self.optimizer_feature.zero_grad()
-                   
-                    loss.backward()
-
-                    self.optimizer_geometry.step()
-                    self.optimizer_feature.step()
-            
-                    
                     self.writer.log(metrics)
+
+                    # # use sequential training: needs 2 optimizers
+                    # self.optimizer_geometry.zero_grad()
+                    # self.optimizer_feature.zero_grad()
+
+                    # loss.backward()
+                    # self.optimizer_geometry.step()
+                    # self.optimizer_feature.step()
+
+                    self.optimizer.zero_grad()                   
+                    loss.backward()
+                    self.optimizer.step()
+
                     if self.iter_step % self.report_freq == 0:
                         print(
                             'iter:{:8>d} loss = {:4>f} color_ls = {:4>f} eik_ls = {:4>f} normal_ls = {:4>f} mask_ls = {:4>f} feature_ls = {:4>f} sparse_ls = {:4>f} lr={:6>f}'.format(
@@ -283,7 +290,10 @@ class Runner:
                                 mask_loss,
                                 feature_loss,
                                 sparse_loss,
-                                self.optimizer_geometry.param_groups[0]['lr'],
+                                # self.optimizer_geometry.param_groups[0]['lr'],
+                                # self.optimizer_feature.param_groups[0]['lr']
+                                self.optimizer.param_groups[0]['lr'],
+                                # self.optimizer.param_groups[2]['lr']
                             )
                         )
                         print('iter:{:8>d} s_val = {:4>f}'.format(self.iter_step, s_val.mean()))
@@ -306,11 +316,8 @@ class Runner:
 
                     if self.iter_step % len(image_perm) == 0:
                         image_perm = self.get_image_perm()
-
-            print("Phase 1 geometry training completed. Now starting Phase 2 feature training...")
         else:
             logging.info(f'loaded pretrained ckpt from lastest model and skip geometry training part')
-
 
         wandb.finish()
 
@@ -331,19 +338,24 @@ class Runner:
             progress = (self.iter_step - self.warm_up_end) / (self.end_iter - self.warm_up_end)
             learning_factor = (np.cos(np.pi * progress) + 1.0) * 0.5 * (1 - alpha) + alpha
 
-        for g in self.optimizer_geometry.param_groups:
-            g['lr'] = self.learning_rate * learning_factor
+        # for g in self.optimizer_geometry.param_groups:
+        #     g['lr'] = self.learning_rate * learning_factor
         
-    def update_learning_rate_feature(self,iter_step):
-        if iter_step < self.warm_up_end:
-            learning_factor = iter_step / self.warm_up_end
-        else:
-            alpha = self.learning_rate_alpha
-            progress = (iter_step - self.warm_up_end) / (self.end_iter - self.warm_up_end)
-            learning_factor = (np.cos(np.pi * progress) + 1.0) * 0.5 * (1 - alpha) + alpha # starting from 1 to alpha
+        # for g in self.optimizer_feature.param_groups:
+        #     g['lr'] = self.learning_rate_feature * learning_factor
 
-        for g in self.optimizer_feature.param_groups:
-            g['lr'] = self.learning_rate * learning_factor
+        # Update learning rates for each parameter group
+        if self.iter_step < self.geo_only_iter:
+            for i, g in enumerate(self.optimizer.param_groups):
+                if i == 0:  # params_to_train_slow
+                    g['lr'] = self.learning_rate * learning_factor
+                elif i == 1:  # color_network parameters
+                    g['lr'] = self.learning_rate * 2 * learning_factor
+        else:  
+            for i, g in enumerate(self.optimizer.param_groups):
+                if i == 0:
+                    g['lr'] = self.learning_rate_feature * learning_factor
+
 
     def file_backup(self):
         dir_lis = self.conf['general.recording']
@@ -379,8 +391,9 @@ class Runner:
             'variance_network_fine': self.deviation_network.state_dict(),
             'color_network_fine': self.color_network.state_dict(),
             'feature_network': self.feature_network.state_dict(),
-            'optimizer-geometry': self.optimizer_geometry.state_dict(),
-            'optimizer-feature': self.optimizer_feature.state_dict(),
+            # 'optimizer-geometry': self.optimizer_geometry.state_dict(),
+            # 'optimizer-feature': self.optimizer_feature.state_dict(),
+            'optimizer': self.optimizer.state_dict(),
             'iter_step': self.iter_step,
         }
 
@@ -449,15 +462,18 @@ class Runner:
             rot = np.linalg.inv(self.dataset.pose_all[idx, :3, :3].detach().cpu().numpy())
             normal_img = (np.matmul(rot[None, :, :], normal_img[:, :, None]).reshape([H, W, 3, -1]) * 128 + 128).clip(0, 255) # (256, 256, 3, 1)
 
-        # breakpoint()
-        feature_img = None
+        feature_img = None # feature image after PCA together with gt feature
         if len(out_feature) > 0:
-            temp_img = (torch.cat(out_feature, axis=0).reshape([H, W, 384, -1])) # (256, 256, 384, 1) h w c N
-            temp_img_re = temp_img.permute(3,0,1,2) # n x h x w x c(3)
-            feature_img = apply_pca_colormap(temp_img_re) # n x h x w x c(3)
+            temp_img = (torch.cat(out_feature, axis=0).reshape([H, W, 384, -1])) # [h, w, c, n] [256, 256, 384, 1] 
+            temp_img_re = temp_img.permute(3,0,1,2) # n x h x w x c(384)
+            imgs = torch.cat((temp_img_re,self.dataset.features[idx].unsqueeze(0)),0) # [n, h, w, c(3)]
+            feature_imgs_pca = apply_pca_colormap(imgs) # [n, h, w, c(3)]
+            
+            feature_img_pca = feature_imgs_pca[0, :, :, :].detach().cpu().numpy() # [h, w, c]
+            gt_feature_img_pca = feature_imgs_pca[1, :, :, :].detach().cpu().numpy() # [h, w, c]
 
-            feature_img = feature_img.permute(1,2,3,0).cpu().numpy() # N h w c -> h w c N
-            feature_img = (feature_img*256).clip(0,255)
+            feature_img = np.concatenate([feature_img_pca, gt_feature_img_pca])[:, :, ::-1] # [h, w, c]
+            feature_img = (feature_img * 256).clip(0, 255).astype(np.uint8) 
 
         os.makedirs(os.path.join(self.base_exp_dir, 'validations_fine'), exist_ok=True)
         os.makedirs(os.path.join(self.base_exp_dir, 'normals'), exist_ok=True)
@@ -470,13 +486,13 @@ class Runner:
                     os.path.join(self.base_exp_dir, 'validations_fine', '{:0>8d}_{}_{}.png'.format(self.iter_step, i, idx)),
                     np.concatenate(
                         [
-                            img_fine[..., i],
+                            img_fine[..., i], # [h, w, c]
                             self.dataset.image_at(idx, resolution_level=resolution_level),
                             self.dataset.mask_at(idx, resolution_level=resolution_level),
                         ]
                     ),
                 )
-                log_images.append(wandb.Image(img_fine[..., i], caption=f"rgb"))
+                log_images.append(wandb.Image(img_fine[..., i][...,[2,1,0]], caption=f"rgb"))
 
             if len(out_normal_fine) > 0:
                 cv.imwrite(
@@ -488,13 +504,13 @@ class Runner:
             if len(out_mask) > 0:
                 cv.imwrite(os.path.join(self.base_exp_dir, 'normals', '{:0>8d}_{}_{}_mask.png'.format(self.iter_step, i, idx)), mask_map[..., i])
                 log_images.append(wandb.Image(mask_map[..., i], caption=f"mask image"))
-                
+            
             if len(out_feature) > 0:
                 cv.imwrite(
                     os.path.join(self.base_exp_dir, 'feature', '{:0>8d}_{}_{}.png'.format(self.iter_step, i, idx)),
-                    np.concatenate([feature_img[..., i]])[:, :, ::-1],
+                    feature_img,
                 )
-                log_images.append(wandb.Image(feature_img[..., i], caption=f"feature image"))
+                log_images.append(wandb.Image(feature_img, caption=f"feature image"))
             wandb.log({f"viewpoint_{idx}": log_images})
     
 
@@ -585,7 +601,6 @@ class Runner:
             del render_out
 
         # TODO add feature image
-
 
         img_fine = (np.concatenate(out_rgb_fine, axis=0).reshape([H, W, 3]) * 256).clip(0, 255).astype(np.uint8)
         # novel_images={

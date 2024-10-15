@@ -236,6 +236,7 @@ class NeuSRenderer:
 
         return z_vals, sdf
 
+    # when rendering inside, there is no NeRF, only SDF
     def render_core(self,
                     rays_o,
                     rays_d,
@@ -261,10 +262,10 @@ class NeuSRenderer:
         pts = rays_o[:, None, :] + rays_d[:, None, :] * mid_z_vals[..., :, None]  # n_rays, n_samples, 3
         dirs = rays_d[:, None, :].expand(pts.shape)
 
-        pts = pts.reshape(-1, 3)
+        pts = pts.reshape(-1, 3) # in range (-1.9, 1.9)
         dirs = dirs.reshape(-1, 3)
 
-        sdf_nn_output = sdf_network(pts) # sdf forward results
+        sdf_nn_output = sdf_network(pts) # the distance to the surface
         sdf = sdf_nn_output[:, :1]
         feature_vector = sdf_nn_output[:, 1:]
 
@@ -305,15 +306,13 @@ class NeuSRenderer:
                             background_sampled_color[:, :n_samples] * (1.0 - inside_sphere)[:, :, None]
             sampled_color = torch.cat([sampled_color, background_sampled_color[:, n_samples:]], dim=1)
 
-        weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1]).to(device), 1. - alpha + 1e-7], -1), -1)[:, :-1]
+        weights = alpha * torch.cumprod(torch.cat([torch.ones([batch_size, 1]).to(device), 1. - alpha + 1e-7], -1), -1)[:, :-1] # weights [bs, n_sample_per_ray, 1]
         weights_sum = weights.sum(dim=-1, keepdim=True)
 
-        # TODO check feature output
-        feature = feature_network(pts) # 65536 x 384
-        feature = feature.reshape(weights.shape[0],-1,384)
-        feature_rendered = feature_render(embeds=feature, weights=weights[:, :, None])
+        feature = feature_network(pts) # [bs*n_sample_per_ray, feat_dim]65536 x 384
+        feature = feature.reshape(weights.shape[0], -1, feature.shape[-1]) # bs, n_sample_per_ray, feat_dim
+        feature_rendered = feature_render(embeds=feature, weights=weights[:, :, None]) 
 
-        # print(f'shape of sampled_color{sampled_color.shape}') # 512, 128,3 
         color = (sampled_color * weights[:, :, None]).sum(dim=1)
         if background_rgb is not None:    # Fixed background, usually black
             color = color + background_rgb.to(device) * (1.0 - weights_sum) # add white layer with 1-w opacity
@@ -340,6 +339,7 @@ class NeuSRenderer:
             'depth': depth,
         }
 
+    # wrapper for render_outside and render_core
     def render(self, rays_o, rays_d, near, far, perturb_overwrite=-1, background_rgb=None, cos_anneal_ratio=0.0):
         batch_size = len(rays_o)
         device = rays_o.device
@@ -422,7 +422,6 @@ class NeuSRenderer:
 
         color_fine = ret_fine['color']
         weights = ret_fine['weights']
-        # pdb.set_trace()
         weights_sum = weights.sum(dim=-1, keepdim=True)
         gradients = ret_fine['gradients']
         s_val = ret_fine['s_val'].reshape(batch_size, n_samples).mean(dim=-1, keepdim=True)
@@ -504,7 +503,7 @@ class NeuSRenderer:
 
 
 class FeatureRender(nn.Module):
-    """Calculate average of embeddings along ray."""
+    """Calculate weighted sum along ray."""
 
     @classmethod
     def forward(
