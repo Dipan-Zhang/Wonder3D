@@ -145,9 +145,7 @@ def load_a_prediction(root_dir, test_object, imSize, view_types, load_color=Fals
     return np.stack(all_images), np.stack(all_masks), np.stack(all_normals), np.stack(all_normals_world), np.stack(all_poses), np.stack(all_w2cs)
 
 def expand_features(features, img_size: List[int]):
-    #TODO make normalization more visible
-    features /= torch.norm(features, dim=-1, keepdim=True)  # Normalize the features along the channel dimension
-    print(f'feature normalized!')
+
     
     # def show_distribution(features, desc: str = None):
     #     print(f'Distribution of {desc}: max: {features.max()}, min: {features.min()}, \n mean: {features.mean()}, std: {features.std()}\n')
@@ -276,6 +274,8 @@ class Dataset:
             view_types = ['front', 'front_right', 'right', 'back', 'left']
         elif self.num_views == 6:
             view_types = ['front', 'front_right', 'right', 'back', 'left', 'front_left']
+        elif self.num_views == 1: # for debugging
+            view_types = ['front']
 
         # load data here 
         self.images_np, self.masks_np, self.normals_cam_np, \
@@ -404,7 +404,7 @@ class Dataset:
     def prepare_all_rays(self,):
         all_rays = []
         for idx in range(self.n_images):
-            rays = self.prepare_rays_a_view(idx) # from each image
+            rays = self.prepare_rays_a_view(idx) # rays, colors features etc from a single view
             all_rays.append(rays)
         all_rays = torch.concat(all_rays, dim=0)
         return all_rays
@@ -479,9 +479,4 @@ class Dataset:
     #     # breakpoint()
     #     return (cv2.resize(feature, (self.W // resolution_level, self.H // resolution_level))).clip(0, 255)
 
-
-
-# if __name__=='__main__':
-#     features = extract_features('/home/stud/zanr/code/tmp/Wonder3D/outputs/cropsize-192-cfg1.0/', 'owl','DINO',256, ['front', 'front_right', 'right', 'back', 'left', 'front_left'], load_color=False, cam_pose_dir=None, normal_system='front')
-    # print(features.shape) # ([6, 55, 55, 384]) n_images, h, w, img_emb_dim
     
