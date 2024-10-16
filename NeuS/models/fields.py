@@ -265,7 +265,7 @@ class SingleVarianceNetwork(nn.Module):
 
 
 import tinycudann as tcnn
-# borrowed from LERF, input is ray and process it with MLP
+# borrowed from LERF, input is ray and process it with MLP 
 class FeatureNetwork(nn.Module):
     def __init__(
         self,
@@ -289,9 +289,7 @@ class FeatureNetwork(nn.Module):
             self.embed_fn = embed_fn
             self.input_ch = input_ch
 
-        # TODO calculate the input dimension
-        # tot_out_dims = 
-        tot_out_dims = multires * 6 + 3
+        tot_out_dims = multires * 6 + 3 # input dim after PE
         self.dino_net = tcnn.Network(
             n_input_dims=tot_out_dims,
             n_output_dims=384,
@@ -324,11 +322,11 @@ class FeatureNetwork(nn.Module):
         return x
 
 
+# borrowed from F3RM, input is ray and process: hashgrid + MLP
 class FeatureField(nn.Module):
     def __init__(
         self,
         feature_dim: int,
-        # spatial_distortion: SpatialDistortion,
         # Positional encoding
         use_pe: bool = True,
         pe_n_freq: int = 6,
@@ -375,7 +373,7 @@ class FeatureField(nn.Module):
         self.field = tcnn.NetworkWithInputEncoding(
             n_input_dims=3,
             n_output_dims=self.feature_dim,
-            encoding_config=encoding_config, # ?? where would this be used?
+            encoding_config=encoding_config,
             network_config={
                 "otype": "FullyFusedMLP",
                 "activation": "ReLU",
@@ -404,8 +402,9 @@ class FeatureField(nn.Module):
         # spatial distortion
         # pts = spatial_distortion(pts)
 
-        pts_ = (pts + 2.0) / 4.0
-        pts_flat = pts_.view(-1, 3) # bs x 48 x 3
-        features = self.field(pts_flat)# bs x 48 x channel(768)
+        pts_ = (pts + 2.0) / 4.0 # bring to [0, 1]  range
+
+        pts_flat = pts_.view(-1, 3) # [bs*n_samples, 3] [65536, 3]
+        features = self.field(pts_flat) # [bs*n_samples, feat_dim] [65536, 384]
         
         return features

@@ -114,10 +114,15 @@ class Runner:
         params_to_train_slow += list(self.sdf_network.parameters())
         params_to_train_slow += list(self.deviation_network.parameters())
  
-        # Set up optimizer: will be updated when sequential training!
-        self.optimizer = torch.optim.Adam(
-            [{'params': params_to_train_slow, 'lr': self.learning_rate}, {'params': self.color_network.parameters(), 'lr': self.learning_rate * 2}]
-        )
+        # Set up optimizer
+        if self.sequential_train:
+            self.optimizer = torch.optim.Adam(
+                [{'params': params_to_train_slow, 'lr': self.learning_rate}, {'params': self.color_network.parameters(), 'lr': self.learning_rate * 2}]
+            )
+        else:
+            self.optimizer = torch.optim.Adam(
+                [{'params': params_to_train_slow, 'lr': self.learning_rate}, {'params': self.color_network.parameters(), 'lr': self.learning_rate * 2}, {'params': self.feature_network.parameters(), 'lr': self.learning_rate_feature}]
+            )
         self.renderer = NeuSRenderer(
             self.nerf_outside, self.sdf_network, self.deviation_network, self.color_network, self.feature_network, self.feature_render,**self.conf['model.neus_renderer']
         )
@@ -188,7 +193,7 @@ class Runner:
                         mask = torch.ones_like(mask)
 
                     cosines[cosines > -0.1] = 0
-                    mask = ((mask > 0) & (cosines < -0.1)).to(torch.float32)
+                    mask = ((mask > 0) & (cosines < -0.1)).to(torch.float32) # [bs, 1]
 
                     mask_sum = mask.sum() + 1e-5
                     render_out = self.renderer.render(
@@ -228,19 +233,19 @@ class Runner:
                     sparse_loss = render_out['sparse_loss']
 
                     # calculate feature loss
-                    feature_loss = F.mse_loss(feature, feature_gt) # feature gt: bs x chanel, 512 x 384,
-                    
-                    # feature_errors = F.mse_loss(feature, feature_gt,reduction='none').sum(dim=1) # feature gt: bs x chanel, 512 x 384,
-                    # feature_loss = ranking_loss(feature_errors[mask[:, 0] > 0])
+                    feature_errors = F.mse_loss(feature, feature_gt, reduction='none').mean(dim=1)
+                    feature_loss = feature_errors[mask[:, 0] > 0].mean()
 
-                    #TODO make this part compatible with train together
-                    if self.iter_step == self.geo_only_iter: # switch to feature training
-                        for param_group in self.optimizer.param_groups[:2]:  # Freezing the first two groups
-                            for param in param_group['params']:
-                                param.requires_grad = False
-                        self.optimizer = torch.optim.Adam(
-                            [{'params': self.feature_network.parameters(), 'lr': self.learning_rate_feature}]
-                        )
+
+                    # if needed, switch to feature training after geo_only_iter
+                    if self.sequential_train:
+                        if self.iter_step == self.geo_only_iter: 
+                            for param_group in self.optimizer.param_groups[:2]:  # Freezing the first two groups
+                                for param in param_group['params']:
+                                    param.requires_grad = False
+                            self.optimizer = torch.optim.Adam(
+                                [{'params': self.feature_network.parameters(), 'lr': self.learning_rate_feature}]
+                            )
 
                     loss = (
                         color_fine_loss * self.color_weight
@@ -263,7 +268,7 @@ class Runner:
                             'Statistics/cdf': (cdf_fine[:, :1] * mask).sum() / mask_sum,
                             'Statistics/weight_max': (weight_max * mask).sum() / mask_sum,
                             'Statistics/psnr': psnr,
-                            'Statistics/feature_range': feature.max() - feature.min(),  # Debug
+                            'Statistics/feature_range': feature[mask[:, 0] > 0].max() - feature[mask[:, 0] > 0].min(), 
                     }
                     self.writer.log(metrics)
 
@@ -338,24 +343,27 @@ class Runner:
             progress = (self.iter_step - self.warm_up_end) / (self.end_iter - self.warm_up_end)
             learning_factor = (np.cos(np.pi * progress) + 1.0) * 0.5 * (1 - alpha) + alpha
 
-        # for g in self.optimizer_geometry.param_groups:
-        #     g['lr'] = self.learning_rate * learning_factor
-        
-        # for g in self.optimizer_feature.param_groups:
-        #     g['lr'] = self.learning_rate_feature * learning_factor
 
-        # Update learning rates for each parameter group
-        if self.iter_step < self.geo_only_iter:
-            for i, g in enumerate(self.optimizer.param_groups):
-                if i == 0:  # params_to_train_slow
-                    g['lr'] = self.learning_rate * learning_factor
-                elif i == 1:  # color_network parameters
-                    g['lr'] = self.learning_rate * 2 * learning_factor
-        else:  
+        # # Update learning rates for each parameter group
+        if self.sequential_train:
+            if self.iter_step < self.geo_only_iter:
+                for i, g in enumerate(self.optimizer.param_groups):
+                    if i == 0:  # params_to_train_slow
+                        g['lr'] = self.learning_rate * learning_factor
+                    elif i == 1:  # color_network parameters
+                        g['lr'] = self.learning_rate * 2 * learning_factor
+            else:  
+                for i, g in enumerate(self.optimizer.param_groups):
+                    if i == 0:
+                        g['lr'] = self.learning_rate_feature * learning_factor
+        else:
             for i, g in enumerate(self.optimizer.param_groups):
                 if i == 0:
                     g['lr'] = self.learning_rate_feature * learning_factor
-
+                elif i == 1:
+                    g['lr'] = self.learning_rate * 2 * learning_factor
+                elif i == 2:
+                    g['lr'] = self.learning_rate_feature * learning_factor
 
     def file_backup(self):
         dir_lis = self.conf['general.recording']
