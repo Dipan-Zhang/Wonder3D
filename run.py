@@ -160,6 +160,7 @@ for i, image_file in enumerate(input_files):
 
             vertices_init, faces_init = vertices_init_list.pop(0), faces_init_list.pop(0)
 
+            is_last_refine = (refine_idx == (args.num_refine - 1))
             rendered_rgbs, rendered_normal, vertices, faces = iterative_refine(vertex_init=vertices_init,
                                                                                 face_init=faces_init,
                                                                                 front_image=input_image,
@@ -170,7 +171,8 @@ for i, image_file in enumerate(input_files):
                                                                                 crop_size=args.crop_size,
                                                                                 output_path=args.output_path,
                                                                                 refine_idx=refine_idx,
-                                                                                do_sr=(refine_idx==(args.num_refine-1))
+                                                                                do_sr=is_last_refine,
+                                                                                render_six_views=is_last_refine,
                                                                                 )
             vertices_init_list.append(vertices)
             faces_init_list.append(faces)

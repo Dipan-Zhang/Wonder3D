@@ -7,12 +7,57 @@ import numpy as np
 from utils.w3d_utils import load_mv_prediction, make_wonder3D_cameras
 from Meshrefine import MeshRefine
 from MeshRecon.util.func import save_obj
+from MeshRecon.util.render import Renderer
+from MeshRecon.remesh import calc_vertex_normals
 
 from utils.refine_lr_to_sr import sr_wonder3d_images
 
 import torch
 import torch.nn.functional as F
 from PIL import Image
+
+# 6-view azimuths matching the original Wonder3D / NAF convention
+SIX_VIEW_NAMES = ['front', 'front_right', 'right', 'back', 'left', 'front_left']
+SIX_VIEW_ANGLES = [0, -45, -90, 180, 90, 45]
+
+
+def render_six_views_from_mesh(textured_mesh, camera_type, image_size, output_dir):
+    """Render the final textured mesh at the 6 Wonder3D azimuths and save them
+    as `normals_000_<view>.png` and `rgb_000_<view>.png` so that downstream
+    multi-view consumers (e.g. NAF) can load a full 6-view set."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    mv_six, proj_six = make_wonder3D_cameras(cam_type=camera_type, angles=SIX_VIEW_ANGLES)
+    renderer = Renderer(mv_six, proj_six, [image_size, image_size])
+
+    vertices = textured_mesh.mesh.v_pos
+    faces = textured_mesh.mesh.t_pos_idx
+    normals = calc_vertex_normals(vertices, faces)
+
+    rendered_normals = renderer.render_normal(vertices, normals, faces)  # C,H,W,4
+    rendered_rgbs = renderer.render_RGB_texture(
+        vertices=vertices,
+        faces=faces,
+        vt=textured_mesh.mesh.v_tex,
+        ft=textured_mesh.mesh.t_tex_idx,
+        texture=textured_mesh.map_Kd,
+    )  # C,H,W,4
+
+    # Use the normal alpha as the canonical mask, then alpha-composite the RGB
+    # onto a white background and drop the alpha so it matches the 3-channel
+    # RGB format produced by the diffusion enhancement stage.
+    alpha = rendered_normals[..., 3:4].clamp(0, 1)
+    rgb3 = rendered_rgbs[..., :3] * alpha + (1.0 - alpha) * 1.0
+
+    def to_uint8(t):
+        return (t.detach() * 255).clamp(max=255).type(torch.uint8).cpu().numpy()
+
+    normals_np = to_uint8(rendered_normals)  # RGBA
+    rgbs_np = to_uint8(rgb3)                 # RGB
+
+    for i, view in enumerate(SIX_VIEW_NAMES):
+        Image.fromarray(normals_np[i], mode='RGBA').save(os.path.join(output_dir, f'normals_000_{view}.png'))
+        Image.fromarray(rgbs_np[i], mode='RGB').save(os.path.join(output_dir, f'rgb_000_{view}.png'))
 
 def c2w_to_w2c(c2w:torch.Tensor):
     # y = Rx + t, x = R_inv(y - t)
@@ -36,7 +81,7 @@ def transoform_rendered_to_pils(images):
     return outs
 
 
-def iterative_refine(vertex_init, face_init, front_image, rgbs, normals, camera_type, scence_name, crop_size, output_path='outputs', refine_idx=0, do_sr=False):
+def iterative_refine(vertex_init, face_init, front_image, rgbs, normals, camera_type, scence_name, crop_size, output_path='outputs', refine_idx=0, do_sr=False, render_six_views=False):
 
         weights = None
         mv, proj = make_wonder3D_cameras(cam_type=camera_type, angles=[0, -90, 180, 90])
@@ -113,6 +158,19 @@ def iterative_refine(vertex_init, face_init, front_image, rgbs, normals, camera_
         obj_path = f'{output_path}/3d_model/model.glb'
 
         texture.export(obj_path)
+
+        if render_six_views:
+            # output_path is <case>/iterative_refine-N/<camera_type>; place the
+            # 6-view dump at <case>/final_mesh_render/<camera_type>.
+            six_view_dir = os.path.join(os.path.dirname(os.path.dirname(output_path)), 'final_mesh_render', camera_type)
+            render_six_views_from_mesh(
+                textured_mesh=texture,
+                camera_type=camera_type,
+                image_size=normals_world.shape[1],
+                output_dir=six_view_dir,
+            )
+            print(f'saved 6 mesh-rendered views to: {six_view_dir}')
+
         rgb_rendered = transoform_rendered_to_pils(rgb_rendered)
         normals_rendered = transoform_rendered_to_pils(normals_rendered)
 
