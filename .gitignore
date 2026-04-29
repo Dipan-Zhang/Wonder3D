@@ -1,0 +1,5 @@
+*.pyc
+outputs/
+.cache/
+weights/
+ckpts/
